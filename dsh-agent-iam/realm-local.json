@@ -1,0 +1,43 @@
+{
+  "realm": "agent-local",
+  "enabled": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "roles": { "realm": [{ "name": "user" }] },
+  "clients": [{
+    "clientId": "agent-web",
+    "name": "DSH Agent local Web client",
+    "enabled": true,
+    "protocol": "openid-connect",
+    "publicClient": true,
+    "standardFlowEnabled": true,
+    "implicitFlowEnabled": false,
+    "directAccessGrantsEnabled": false,
+    "serviceAccountsEnabled": false,
+    "redirectUris": ["http://localhost:3000/callback"],
+    "webOrigins": ["http://localhost:3000"],
+    "attributes": { "pkce.code.challenge.method": "S256" },
+    "protocolMappers": [
+      {
+        "name": "platform-audience",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "config": { "included.custom.audience": "agent-platform", "access.token.claim": "true", "id.token.claim": "false" }
+      },
+      {
+        "name": "local-tenant",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-hardcoded-claim-mapper",
+        "config": { "claim.name": "tenantId", "claim.value": "local-dev", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "false" }
+      },
+      {
+        "name": "platform-roles",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-realm-role-mapper",
+        "config": { "claim.name": "roles", "multivalued": "true", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "false" }
+      }
+    ]
+  }]
+}

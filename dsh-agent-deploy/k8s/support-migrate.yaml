@@ -1,0 +1,125 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "name": "dsh-agent-quota-migrate-v3",
+    "namespace": "agent-platform"
+  },
+  "spec": {
+    "backoffLimit": 1,
+    "activeDeadlineSeconds": 120,
+    "template": {
+      "spec": {
+        "restartPolicy": "Never",
+        "automountServiceAccountToken": false,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 1000,
+          "runAsGroup": 1000,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "migrate",
+            "image": "change-me/dsh-agent-quota:0.1.0",
+            "command": [
+              "node",
+              "dist/migrate.js"
+            ],
+            "envFrom": [
+              {
+                "secretRef": {
+                  "name": "dsh-agent-quota-db"
+                }
+              }
+            ],
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "resources": {
+              "requests": {
+                "cpu": "50m",
+                "memory": "128Mi"
+              },
+              "limits": {
+                "cpu": "1",
+                "memory": "256Mi"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+---
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "name": "dsh-agent-audit-migrate-v2",
+    "namespace": "agent-platform"
+  },
+  "spec": {
+    "backoffLimit": 1,
+    "activeDeadlineSeconds": 120,
+    "template": {
+      "spec": {
+        "restartPolicy": "Never",
+        "automountServiceAccountToken": false,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 1000,
+          "runAsGroup": 1000,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "migrate",
+            "image": "change-me/dsh-agent-audit:0.1.0",
+            "command": [
+              "node",
+              "dist/migrate.js"
+            ],
+            "envFrom": [
+              {
+                "secretRef": {
+                  "name": "dsh-agent-audit-admin-db"
+                }
+              }
+            ],
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "resources": {
+              "requests": {
+                "cpu": "50m",
+                "memory": "128Mi"
+              },
+              "limits": {
+                "cpu": "1",
+                "memory": "256Mi"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

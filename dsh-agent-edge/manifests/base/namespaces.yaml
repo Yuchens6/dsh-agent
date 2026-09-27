@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-edge-system
+  labels:
+    app.kubernetes.io/name: dsh-agent-edge
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-platform
+  labels:
+    dsh.agent/public-routes: "true"
+

@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - gatewayclass.yaml
+  - gateway.yaml
+  - routes/api-route.yaml
+  - routes/stream-route.yaml
+  - policies/public-security-policy.yaml
+  - policies/api-traffic-policy.yaml
+  - policies/stream-traffic-policy.yaml
+  - network/api-ingress-policy.yaml
+  - network/stream-ingress-policy.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: dsh-agent-platform
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false

@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dsh-agent-catalog
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: dsh-agent-catalog }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: dsh-agent-catalog }
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: catalog
+          image: change-me/dsh-agent-catalog:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          envFrom:
+            - secretRef: { name: dsh-agent-catalog-read-db }
+            - secretRef: { name: dsh-agent-api-catalog }
+            - secretRef: { name: dsh-agent-chat-catalog }
+            - secretRef: { name: dsh-agent-run-control-catalog }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            timeoutSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dsh-agent-catalog
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: dsh-agent-catalog }
+  ports: [{ name: http, port: 8080, targetPort: http }]

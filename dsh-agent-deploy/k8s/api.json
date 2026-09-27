@@ -1,0 +1,135 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "dsh-agent-api",
+        "namespace": "agent-platform"
+      },
+      "spec": {
+        "replicas": 2,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "dsh-agent-api"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "dsh-agent-api"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 1000,
+              "runAsGroup": 1000,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "api",
+                "image": "change-me/dsh-agent-api:0.1.0",
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "env": [
+                  { "name": "QUOTA_URL", "value": "http://dsh-agent-quota:8080" },
+                  { "name": "AUDIT_URL", "value": "http://dsh-agent-audit:8080" },
+                  {
+                    "name": "API_CHAT_SECRET",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "dsh-agent-api-chat",
+                        "key": "API_CHAT_SECRET"
+                      }
+                    }
+                  }
+                ],
+                "envFrom": [
+                  { "secretRef": { "name": "dsh-agent-api-quota" } },
+                  { "secretRef": { "name": "dsh-agent-api-audit" } },
+                  { "secretRef": { "name": "dsh-agent-api-run-control" } },
+                  { "secretRef": { "name": "dsh-agent-api-workspace" } },
+                  { "secretRef": { "name": "dsh-agent-api-catalog" } },
+                  {
+                    "configMapRef": {
+                      "name": "dsh-agent-config"
+                    }
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "512Mi"
+                  }
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/health/live",
+                    "port": "http"
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 10
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/health/ready",
+                    "port": "http"
+                  },
+                  "initialDelaySeconds": 3,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 5
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "dsh-agent-api",
+        "namespace": "agent-platform"
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "selector": {
+          "app.kubernetes.io/name": "dsh-agent-api"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": "http"
+          }
+        ]
+      }
+    }
+  ]
+}

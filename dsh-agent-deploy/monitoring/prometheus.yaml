@@ -1,0 +1,63 @@
+{
+  "global": {
+    "scrape_interval": "30s",
+    "scrape_timeout": "10s",
+    "evaluation_interval": "30s"
+  },
+  "rule_files": [
+    "alerts.yaml"
+  ],
+  "scrape_configs": [
+    {
+      "job_name": "dsh-chat",
+      "metrics_path": "/metrics",
+      "scheme": "http",
+      "follow_redirects": false,
+      "authorization": {
+        "type": "Bearer",
+        "credentials_file": "/etc/prometheus/secrets/chat"
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "dsh-agent-chat.agent-platform.svc.cluster.local:8080"
+          ]
+        }
+      ]
+    },
+    {
+      "job_name": "dsh-workspace",
+      "metrics_path": "/metrics",
+      "scheme": "http",
+      "follow_redirects": false,
+      "authorization": {
+        "type": "Bearer",
+        "credentials_file": "/etc/prometheus/secrets/workspace"
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "dsh-agent-workspace.agent-platform.svc.cluster.local:8080"
+          ]
+        }
+      ]
+    },
+    {
+      "job_name": "dsh-run-control",
+      "metrics_path": "/metrics",
+      "scheme": "http",
+      "follow_redirects": false,
+      "authorization": {
+        "type": "Bearer",
+        "credentials_file": "/etc/prometheus/secrets/run-control"
+      },
+      "static_configs": [
+        {
+          "targets": [
+            "dsh-agent-run-control.agent-platform.svc.cluster.local:8080"
+          ]
+        }
+      ]
+    }
+  ]
+}

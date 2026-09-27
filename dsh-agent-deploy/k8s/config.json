@@ -1,0 +1,27 @@
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {
+    "name": "dsh-agent-config",
+    "namespace": "agent-platform"
+  },
+  "data": {
+    "NODE_ENV": "production",
+    "API_MAX_IN_FLIGHT": "128",
+    "CHAT_MESSAGES_PER_MINUTE": "120",
+    "CHAT_PENDING_PER_USER": "1000",
+    "CHAT_PENDING_PER_SESSION": "100",
+    "CHAT_PUBLISH_WORKERS": "2",
+    "IAM_ISSUER": "https://change-me.auth.example.com/realms/agent",
+    "IAM_JWKS_URL": "https://change-me.auth.example.com/realms/agent/protocol/openid-connect/certs",
+    "IAM_AUDIENCE": "agent-platform",
+    "CHAT_URL": "http://dsh-agent-chat:8080",
+    "WORKSPACE_URL": "http://dsh-agent-workspace:8080",
+    "CATALOG_URL": "http://dsh-agent-catalog:8080",
+    "RUN_CONTROL_URL": "http://dsh-agent-run-control:8080",
+    "AUDIT_URL": "http://dsh-agent-audit:8080",
+    "S3_ENDPOINT": "https://change-me.storage.example.com",
+    "S3_REGION": "us-east-1",
+    "S3_BUCKET": "dsh-workspaces"
+  }
+}

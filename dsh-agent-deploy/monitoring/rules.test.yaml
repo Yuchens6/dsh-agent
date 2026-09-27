@@ -1,0 +1,55 @@
+{
+  "rule_files": [
+    "alerts.yaml"
+  ],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "dsh_chat_audit_oldest_age_seconds{job=\"dsh-chat\",instance=\"chat:8080\"}",
+          "values": "600+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "4m",
+          "alertname": "DshAuditLag",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "10m",
+          "alertname": "DshAuditLag",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "dsh-chat",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "DSH 审计投递积压"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "dsh_chat_audit_oldest_age_seconds{job=\"dsh-chat\",instance=\"chat:8080\"}",
+          "values": "0+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "10m",
+          "alertname": "DshAuditLag",
+          "exp_alerts": []
+        }
+      ]
+    }
+  ]
+}

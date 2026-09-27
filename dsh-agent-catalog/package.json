@@ -1,0 +1,5 @@
+{
+  "name": "@dsh-agent/catalog", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.build.json", "start": "node dist/main.js", "migrate": "node dist/migrate.js", "publish": "node dist/publish.js" },
+  "dependencies": { "@dsh-agent/contracts": "0.1.0", "fastify": "5.12.5", "jose": "6.2.12", "zod": "4.6.5", "pg": "8.23.0" }
+}

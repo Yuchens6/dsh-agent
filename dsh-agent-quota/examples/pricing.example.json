@@ -1,0 +1,14 @@
+{
+  "kind": "price",
+  "policy": {
+    "id": "01990000-0000-7000-8000-000000000011",
+    "provider": "deepseek-official",
+    "model": "configure-model",
+    "currency": "CNY",
+    "inputPerMillion": "1",
+    "cacheReadPerMillion": "0.5",
+    "outputPerMillion": "2",
+    "pointsPerYuan": "100",
+    "reservePointsPerRun": "1"
+  }
+}

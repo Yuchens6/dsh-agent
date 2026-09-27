@@ -1,0 +1,44 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+labels:
+  - pairs:
+      app.kubernetes.io/environment: production
+    includeSelectors: false
+patches:
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: Gateway
+      name: agent-public
+    patch: |-
+      - op: replace
+        path: /spec/listeners/0/hostname
+        value: change-me.agent.example.com
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+    patch: |-
+      - op: replace
+        path: /spec/hostnames/0
+        value: change-me.agent.example.com
+  - target:
+      group: gateway.envoyproxy.io
+      version: v1alpha1
+      kind: SecurityPolicy
+      name: public-route-security
+    patch: |-
+      - op: replace
+        path: /spec/cors/allowOrigins/0
+        value: https://change-me.web.example.com
+      - op: add
+        path: /spec/jwt
+        value:
+          providers:
+            - name: dsh-agent-iam
+              audiences: ["agent-platform"]
+              issuer: https://change-me.auth.example.com/
+              remoteJWKS:
+                uri: https://change-me.auth.example.com/.well-known/jwks.json

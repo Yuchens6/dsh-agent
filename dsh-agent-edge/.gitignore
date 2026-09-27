@@ -1,0 +1,4 @@
+.rendered/
+*.local.yaml
+*.local.yml
+

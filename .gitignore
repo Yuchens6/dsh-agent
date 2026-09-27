@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.rendered/
+coverage/
+.tools/
+*.tsbuildinfo
+
+# Independent upstream checkout; platform dependencies are pinned in package-lock.json.
+/deepseek-harness/
+
+# Local logs and private credentials.
+*.log
+*.pem
+*.key

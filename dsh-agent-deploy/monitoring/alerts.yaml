@@ -1,0 +1,86 @@
+{
+  "groups": [
+    {
+      "name": "dsh-backend",
+      "rules": [
+        {
+          "alert": "DshScrapeFailed",
+          "expr": "max by (job) (up{job=~\"dsh-(chat|workspace|run-control)\"}) == 0",
+          "for": "2m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "DSH 服务指标抓取失败"
+          }
+        },
+        {
+          "alert": "DshAuditLag",
+          "expr": "max by (job) (dsh_chat_audit_oldest_age_seconds or dsh_workspace_audit_oldest_age_seconds) > 300",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "DSH 审计投递积压"
+          }
+        },
+        {
+          "alert": "DshEventLag",
+          "expr": "max by (job) (dsh_chat_events_oldest_age_seconds) > 120",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "DSH 会话事件发布积压"
+          }
+        },
+        {
+          "alert": "DshSupportRetryLag",
+          "expr": "max by (job) (dsh_run_control_support_retry_oldest_age_seconds) > 300",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "DSH 审计或配额关闭持续投递失败"
+          }
+        },
+        {
+          "alert": "DshProjectionRetry",
+          "expr": "max by (job) (dsh_run_control_projections_max_attempts) >= 3",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "DSH 助手回答投影持续失败"
+          }
+        },
+        {
+          "alert": "DshLeaseSweepStalled",
+          "expr": "max by (job) (dsh_run_control_runs_overdue) > 0",
+          "for": "1m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "DSH 过期运行未收敛"
+          }
+        },
+        {
+          "alert": "DshGcLag",
+          "expr": "max by (job) (dsh_workspace_blobs_gc_pending) > 0",
+          "for": "15m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "DSH 对象回收存在持续积压"
+          }
+        }
+      ]
+    }
+  ]
+}

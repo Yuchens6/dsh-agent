@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chat-from-api-only
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dsh-agent-chat
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dsh-agent-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dsh-agent-run-control
+      ports:
+        - protocol: TCP
+          port: 8080

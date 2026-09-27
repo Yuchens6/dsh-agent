@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: audit-from-producers
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: dsh-agent-audit }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-chat }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-workspace }
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-from-monitor
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [dsh-agent-chat, dsh-agent-workspace, dsh-agent-run-control]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-monitor }
+      ports: [{ protocol: TCP, port: 8080 }]

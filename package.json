@@ -1,0 +1,21 @@
+{
+  "name": "dsh-agent-platform",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "workspaces": ["dsh-agent-contracts", "dsh-agent-api", "dsh-agent-chat", "dsh-agent-stream", "dsh-agent-workspace", "dsh-agent-catalog", "dsh-agent-run-control", "dsh-agent-runtime-dsh", "dsh-agent-quota", "dsh-agent-audit"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test --test-concurrency=4 tests/*.test.ts",
+    "test:load:chat": "tsx tests/load-chat.ts",
+    "check": "npm run typecheck && npm run build && npm test"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.14",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

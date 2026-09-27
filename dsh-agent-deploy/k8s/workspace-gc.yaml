@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dsh-agent-workspace-gc
+spec:
+  schedule: "0,10,20,30,40,50 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels: { app.kubernetes.io/name: dsh-agent-workspace-gc }
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: gc
+              image: change-me/dsh-agent-workspace:0.1.0
+              command: [node, dist/gc.js]
+              envFrom:
+                - configMapRef: { name: dsh-agent-config }
+                - secretRef: { name: dsh-agent-workspace-db }
+                - secretRef: { name: dsh-agent-workspace-s3 }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { cpu: "1", memory: 256Mi }

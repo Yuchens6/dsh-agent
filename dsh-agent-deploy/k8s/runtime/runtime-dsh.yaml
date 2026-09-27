@@ -1,0 +1,83 @@
+# 单独启用的执行服务模板，不在父目录默认 kustomization.yaml 中。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dsh-agent-runtime-dsh
+  namespace: agent-platform
+spec:
+  replicas: 0
+  selector:
+    matchLabels: { app.kubernetes.io/name: dsh-agent-runtime-dsh }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: dsh-agent-runtime-dsh }
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: change-me/dsh-agent-runtime-dsh:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: RUNTIME_ENABLED, value: "false" }
+            - { name: RUN_CONTROL_URL, value: "http://dsh-agent-run-control:8080" }
+            - { name: WORKSPACE_URL, value: "http://dsh-agent-workspace:8080" }
+            - { name: DEEPSEEK_BASE_URL, value: "https://api.deepseek.com" }
+            - { name: RUNTIME_MAX_TOOL_CALLS, value: "100" }
+            - { name: RUNTIME_CONCURRENCY, value: "1" }
+            - name: RUNTIME_RUN_CONTROL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dsh-agent-runtime-run-control
+                  key: RUNTIME_RUN_CONTROL_SECRET
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dsh-agent-runtime-model
+                  key: DEEPSEEK_API_KEY
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            timeoutSeconds: 5
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-agent-runtime-dsh
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: dsh-agent-runtime-dsh }
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-run-control }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-workspace }
+      ports: [{ protocol: TCP, port: 8080 }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4]
+      ports: [{ protocol: TCP, port: 443 }]

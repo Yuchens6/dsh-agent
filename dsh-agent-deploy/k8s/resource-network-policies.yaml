@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-agent-workspace-ingress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: dsh-agent-workspace }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-api }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-chat }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-runtime-dsh }
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-agent-catalog-ingress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: dsh-agent-catalog }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-api }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-chat }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dsh-agent-run-control }
+      ports: [{ protocol: TCP, port: 8080 }]

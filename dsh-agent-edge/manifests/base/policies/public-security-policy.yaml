@@ -1,0 +1,33 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: public-route-security
+  namespace: agent-platform
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agent-api
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agent-stream
+  cors:
+    allowOrigins:
+      - http://localhost:3000
+    allowMethods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+    allowHeaders:
+      - Authorization
+      - Content-Type
+      - Idempotency-Key
+      - Last-Event-ID
+      - X-Session-Capability
+      - Traceparent
+    exposeHeaders:
+      - X-Request-Id
+      - Retry-After

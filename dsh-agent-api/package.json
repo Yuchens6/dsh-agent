@@ -1,0 +1,17 @@
+{
+  "name": "@dsh-agent/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@dsh-agent/contracts": "0.1.0",
+    "fastify": "5.12.5",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
+  }
+}

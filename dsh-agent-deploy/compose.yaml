@@ -1,0 +1,375 @@
+name: dsh-agent-local
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: agent
+      POSTGRES_USER: platform_admin
+      POSTGRES_PASSWORD: ${PG_ROOT_PASSWORD:?Run node dsh-agent-deploy/init-dev.mjs}
+      CHAT_DB_PASSWORD: ${CHAT_DB_PASSWORD:?Required}
+      IAM_DB_PASSWORD: ${IAM_DB_PASSWORD:?Required}
+      WORKSPACE_DB_PASSWORD: ${WORKSPACE_DB_PASSWORD:?Required}
+      CATALOG_DB_PASSWORD: ${CATALOG_DB_PASSWORD:?Required}
+      CATALOG_READ_DB_PASSWORD: ${CATALOG_READ_DB_PASSWORD:?Required}
+      RUN_CONTROL_DB_PASSWORD: ${RUN_CONTROL_DB_PASSWORD:?Required}
+      QUOTA_DB_PASSWORD: ${QUOTA_DB_PASSWORD:?Required}
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?Required}
+      AUDIT_WRITER_DB_PASSWORD: ${AUDIT_WRITER_DB_PASSWORD:?Required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sh:/docker-entrypoint-initdb.d/01-platform.sh:ro
+      - ./postgres/upgrade-resources.sh:/opt/platform/upgrade-resources.sh:ro
+      - ./postgres/upgrade-support.sh:/opt/platform/upgrade-support.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform_admin -d agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  iam:
+    image: quay.io/keycloak/keycloak:26.7.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/agent
+      KC_DB_SCHEMA: iam
+      KC_DB_USERNAME: iam
+      KC_DB_PASSWORD: ${IAM_DB_PASSWORD:?Required}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?Required}
+      KC_HOSTNAME: http://localhost:8081
+    ports: ["127.0.0.1:8081:8080"]
+    volumes: ["../dsh-agent-iam/realm-local.json:/opt/keycloak/data/import/realm-local.json:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  nats:
+    image: nats:2.15.0-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--auth", "${NATS_TOKEN:?Required}"]
+    volumes: ["nats-data:/data"]
+
+  nats-init:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-stream }
+    command: ["node", "/app/dsh-agent-deploy/init-stream.mjs"]
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_TOKEN: ${NATS_TOKEN:?Required}
+    depends_on: [nats]
+    restart: on-failure
+
+  chat-migrate:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-chat }
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://chat:${CHAT_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  chat:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-chat }
+    environment:
+      DATABASE_URL: postgresql://chat:${CHAT_DB_PASSWORD:?Required}@postgres:5432/agent
+      API_CHAT_SECRET: ${API_CHAT_SECRET:?Required}
+      CHAT_CAPABILITY_SECRET: ${CHAT_CAPABILITY_SECRET:?Required}
+      NATS_URL: nats://nats:4222
+      NATS_TOKEN: ${NATS_TOKEN:?Required}
+      WORKSPACE_URL: http://workspace:8080
+      CATALOG_URL: http://catalog:8080
+      CHAT_WORKSPACE_SECRET: ${CHAT_WORKSPACE_SECRET:?Required}
+      CHAT_CATALOG_SECRET: ${CHAT_CATALOG_SECRET:?Required}
+      RUN_CONTROL_CHAT_SECRET: ${RUN_CONTROL_CHAT_SECRET:?Required}
+      AUDIT_URL: http://audit:8080
+      CHAT_AUDIT_SECRET: ${CHAT_AUDIT_SECRET:?Required}
+      CHAT_METRICS_SECRET: ${CHAT_METRICS_SECRET:?Required}
+      CHAT_MESSAGES_PER_MINUTE: ${CHAT_MESSAGES_PER_MINUTE:-120}
+      CHAT_PENDING_PER_USER: ${CHAT_PENDING_PER_USER:-1000}
+      CHAT_PENDING_PER_SESSION: ${CHAT_PENDING_PER_SESSION:-100}
+      CHAT_PUBLISH_WORKERS: ${CHAT_PUBLISH_WORKERS:-2}
+      DB_POOL_MAX: ${CHAT_DB_POOL_MAX:-10}
+      DB_MAX_WAITING: ${CHAT_DB_MAX_WAITING:-64}
+    depends_on:
+      chat-migrate: { condition: service_completed_successfully }
+      nats-init: { condition: service_completed_successfully }
+      workspace: { condition: service_healthy }
+      catalog: { condition: service_healthy }
+      catalog-seed: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-api }
+    environment:
+      NODE_ENV: development
+      IAM_ISSUER: http://localhost:8081/realms/agent-local
+      IAM_JWKS_URL: http://iam:8080/realms/agent-local/protocol/openid-connect/certs
+      CHAT_URL: http://chat:8080
+      API_CHAT_SECRET: ${API_CHAT_SECRET:?Required}
+      WORKSPACE_URL: http://workspace:8080
+      CATALOG_URL: http://catalog:8080
+      API_WORKSPACE_SECRET: ${API_WORKSPACE_SECRET:?Required}
+      API_CATALOG_SECRET: ${API_CATALOG_SECRET:?Required}
+      RUN_CONTROL_URL: http://run-control:8080
+      API_RUN_CONTROL_SECRET: ${API_RUN_CONTROL_SECRET:?Required}
+      QUOTA_URL: http://quota:8080
+      AUDIT_URL: http://audit:8080
+      API_QUOTA_SECRET: ${API_QUOTA_SECRET:?Required}
+      API_AUDIT_SECRET: ${API_AUDIT_SECRET:?Required}
+      API_MAX_IN_FLIGHT: ${API_MAX_IN_FLIGHT:-128}
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      chat: { condition: service_healthy }
+      iam: { condition: service_started }
+
+  run-control-migrate:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-run-control }
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://run_control:${RUN_CONTROL_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  run-control:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-run-control }
+    environment:
+      DATABASE_URL: postgresql://run_control:${RUN_CONTROL_DB_PASSWORD:?Required}@postgres:5432/agent
+      API_RUN_CONTROL_SECRET: ${API_RUN_CONTROL_SECRET:?Required}
+      RUNTIME_RUN_CONTROL_SECRET: ${RUNTIME_RUN_CONTROL_SECRET:?Required}
+      CHAT_URL: http://chat:8080
+      CATALOG_URL: http://catalog:8080
+      RUN_CONTROL_CHAT_SECRET: ${RUN_CONTROL_CHAT_SECRET:?Required}
+      RUN_CONTROL_CATALOG_SECRET: ${RUN_CONTROL_CATALOG_SECRET:?Required}
+      RUN_CONTROL_WORKSPACE_SECRET: ${RUN_CONTROL_WORKSPACE_SECRET:?Required}
+      WORKSPACE_RUN_CONTROL_SECRET: ${WORKSPACE_RUN_CONTROL_SECRET:?Required}
+      QUOTA_URL: http://quota:8080
+      AUDIT_URL: http://audit:8080
+      RUN_CONTROL_QUOTA_SECRET: ${RUN_CONTROL_QUOTA_SECRET:?Required}
+      RUN_CONTROL_AUDIT_SECRET: ${RUN_CONTROL_AUDIT_SECRET:?Required}
+      RUN_CONTROL_METRICS_SECRET: ${RUN_CONTROL_METRICS_SECRET:?Required}
+      RUN_DELIVERY_WORKERS: ${RUN_DELIVERY_WORKERS:-2}
+      RUN_MAX_ACTIVE: ${RUN_MAX_ACTIVE:-64}
+      RUN_USER_ACTIVE: ${RUN_USER_ACTIVE:-2}
+      RUN_TENANT_ACTIVE: ${RUN_TENANT_ACTIVE:-32}
+      RUN_AGING_SECONDS: ${RUN_AGING_SECONDS:-60}
+      DB_POOL_MAX: ${RUN_DB_POOL_MAX:-10}
+      DB_MAX_WAITING: ${RUN_DB_MAX_WAITING:-64}
+      NATS_URL: nats://nats:4222
+      NATS_TOKEN: ${NATS_TOKEN:?Required}
+    depends_on:
+      run-control-migrate: { condition: service_completed_successfully }
+      nats-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  quota-migrate:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-quota }
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://quota:${QUOTA_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  quota:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-quota }
+    environment:
+      DATABASE_URL: postgresql://quota:${QUOTA_DB_PASSWORD:?Required}@postgres:5432/agent
+      API_QUOTA_SECRET: ${API_QUOTA_SECRET:?Required}
+      RUN_CONTROL_QUOTA_SECRET: ${RUN_CONTROL_QUOTA_SECRET:?Required}
+      POINTS_BILLING_ENABLED: ${POINTS_BILLING_ENABLED:-false}
+    depends_on:
+      quota-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  audit-migrate:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-audit }
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://audit:${AUDIT_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  audit:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-audit }
+    environment:
+      DATABASE_URL: postgresql://audit_writer:${AUDIT_WRITER_DB_PASSWORD:?Required}@postgres:5432/agent
+      API_AUDIT_SECRET: ${API_AUDIT_SECRET:?Required}
+      RUN_CONTROL_AUDIT_SECRET: ${RUN_CONTROL_AUDIT_SECRET:?Required}
+      CHAT_AUDIT_SECRET: ${CHAT_AUDIT_SECRET:?Required}
+      WORKSPACE_AUDIT_SECRET: ${WORKSPACE_AUDIT_SECRET:?Required}
+    depends_on:
+      audit-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  runtime-dsh:
+    profiles: ["runtime"]
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-runtime-dsh }
+    environment:
+      RUNTIME_ENABLED: ${RUNTIME_ENABLED:-false}
+      RUN_CONTROL_URL: http://run-control:8080
+      WORKSPACE_URL: http://workspace:8080
+      RUNTIME_RUN_CONTROL_SECRET: ${RUNTIME_RUN_CONTROL_SECRET:?Required}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      RUNTIME_MAX_TOOL_CALLS: ${RUNTIME_MAX_TOOL_CALLS:-100}
+      RUNTIME_CONCURRENCY: ${RUNTIME_CONCURRENCY:-1}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    pids_limit: 64
+    stop_grace_period: 20s
+    depends_on:
+      run-control: { condition: service_healthy }
+      workspace: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  workspace-migrate:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-workspace }
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://workspace:${WORKSPACE_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  workspace:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-workspace }
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://workspace:${WORKSPACE_DB_PASSWORD:?Required}@postgres:5432/agent
+      API_WORKSPACE_SECRET: ${API_WORKSPACE_SECRET:?Required}
+      CHAT_WORKSPACE_SECRET: ${CHAT_WORKSPACE_SECRET:?Required}
+      S3_ENDPOINT: ${S3_ENDPOINT:?Configure S3-compatible storage}
+      RUN_CONTROL_URL: http://run-control:8080
+      RUN_CONTROL_WORKSPACE_SECRET: ${RUN_CONTROL_WORKSPACE_SECRET:?Required}
+      WORKSPACE_RUN_CONTROL_SECRET: ${WORKSPACE_RUN_CONTROL_SECRET:?Required}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:?Required}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Required}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Required}
+      AUDIT_URL: http://audit:8080
+      WORKSPACE_AUDIT_SECRET: ${WORKSPACE_AUDIT_SECRET:?Required}
+      WORKSPACE_METRICS_SECRET: ${WORKSPACE_METRICS_SECRET:?Required}
+    depends_on:
+      workspace-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  catalog-migrate:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-catalog }
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://catalog:${CATALOG_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  catalog-seed:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-catalog }
+    command: ["node", "dist/publish.js", "--file", "definitions/document-agent.v1.json", "--tenant", "local-dev", "--default"]
+    environment:
+      DATABASE_URL: postgresql://catalog:${CATALOG_DB_PASSWORD:?Required}@postgres:5432/agent
+    depends_on:
+      catalog-migrate: { condition: service_completed_successfully }
+
+  catalog:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-catalog }
+    environment:
+      DATABASE_URL: postgresql://catalog_reader:${CATALOG_READ_DB_PASSWORD:?Required}@postgres:5432/agent
+      API_CATALOG_SECRET: ${API_CATALOG_SECRET:?Required}
+      CHAT_CATALOG_SECRET: ${CHAT_CATALOG_SECRET:?Required}
+      RUN_CONTROL_CATALOG_SECRET: ${RUN_CONTROL_CATALOG_SECRET:?Required}
+    depends_on:
+      catalog-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  stream:
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-stream }
+    environment:
+      NODE_ENV: development
+      IAM_ISSUER: http://localhost:8081/realms/agent-local
+      IAM_JWKS_URL: http://iam:8080/realms/agent-local/protocol/openid-connect/certs
+      CHAT_CAPABILITY_SECRET: ${CHAT_CAPABILITY_SECRET:?Required}
+      NATS_URL: nats://nats:4222
+      NATS_TOKEN: ${NATS_TOKEN:?Required}
+    ports: ["127.0.0.1:8082:8080"]
+    depends_on:
+      nats-init: { condition: service_completed_successfully }
+      iam: { condition: service_started }
+
+volumes:
+  postgres-data:
+  nats-data:
