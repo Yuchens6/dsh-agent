@@ -6,6 +6,7 @@ dist/
 .rendered/
 coverage/
 .tools/
+.local/
 *.tsbuildinfo
 
 # Independent upstream checkout; platform dependencies are pinned in package-lock.json.

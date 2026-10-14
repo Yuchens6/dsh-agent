@@ -3,12 +3,14 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=24.0.0" },
-  "workspaces": ["dsh-agent-contracts", "dsh-agent-api", "dsh-agent-chat", "dsh-agent-stream", "dsh-agent-workspace", "dsh-agent-catalog", "dsh-agent-run-control", "dsh-agent-runtime-dsh", "dsh-agent-quota", "dsh-agent-audit"],
+  "workspaces": ["dsh-agent-contracts", "dsh-agent-api", "dsh-agent-chat", "dsh-agent-stream", "dsh-agent-workspace", "dsh-agent-catalog", "dsh-agent-run-control", "dsh-agent-runtime-dsh", "dsh-agent-quota", "dsh-agent-audit", "dsh-agent-knowledge", "dsh-agent-web"],
   "scripts": {
     "build": "npm run build --workspaces",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=4 tests/*.test.ts",
+    "test": "tsx --test --test-concurrency=4 tests/*.test.ts tests/*.test.mjs",
+    "dev:web": "npm run dev --workspace @dsh-agent/web",
     "test:load:chat": "tsx tests/load-chat.ts",
+    "test:live:model": "node dsh-agent-runtime-dsh/scripts/model-smoke.mjs",
     "check": "npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {

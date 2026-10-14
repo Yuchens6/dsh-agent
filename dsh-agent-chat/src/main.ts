@@ -13,6 +13,7 @@ const env = z.object({
   DATABASE_URL: z.string().min(1), API_CHAT_SECRET: z.string().min(32),
   CHAT_CAPABILITY_SECRET: z.string().min(32), NATS_URL: z.string().url(),
   NATS_TOKEN: z.string().min(1), PORT: z.coerce.number().int().default(8080),
+  HOST: z.enum(["127.0.0.1", "0.0.0.0"]).default("0.0.0.0"),
   WORKSPACE_URL: z.url(), CATALOG_URL: z.url(),
   CHAT_WORKSPACE_SECRET: z.string().min(32), CHAT_CATALOG_SECRET: z.string().min(32),
   RUN_CONTROL_CHAT_SECRET: z.string().min(32),
@@ -49,8 +50,8 @@ const auditPublisher = backgroundWorkers(1,stopped.signal,async()=>await reposit
 // 失败不标记已发送；下一轮重新发布，消息标识支持 JetStream 去重。
 const publisher = backgroundWorkers(env.CHAT_PUBLISH_WORKERS,stopped.signal,async()=>await repository.publishBatch(async(subject,event)=>{
   await js.publish(subject,JSON.stringify(event),{msgID:event.eventId});
-})>0,()=>app.log.warn("Outbox publish failed; retry scheduled"));
-await app.listen({ host: "0.0.0.0", port: env.PORT, backlog: 1024 });
+})>0,()=>app.log.warn("Outbox publish failed; retry scheduled"),100);
+await app.listen({ host: env.HOST, port: env.PORT, backlog: 1024 });
 async function stop() {
   if (stopping) return;
   stopping = true; stopped.abort();

@@ -10,9 +10,11 @@ import { executionClient } from "./execution-client.js";
 import { workspaceCapabilitySigner, workspaceServiceVerifier } from "./workspace-auth.js";
 import { supportClient } from "./support-client.js";
 import { backgroundWorkers } from "./background.js";
+import { knowledgeCapabilitySigner, knowledgeServiceVerifier } from "./knowledge-auth.js";
 const env = z.object({
   DATABASE_URL: z.string().min(1), API_RUN_CONTROL_SECRET: z.string().min(32), RUNTIME_RUN_CONTROL_SECRET: z.string().min(32),
   NATS_URL: z.url(), NATS_TOKEN: z.string().min(1), PORT: z.coerce.number().int().default(8080),
+  HOST: z.enum(["127.0.0.1", "0.0.0.0"]).default("0.0.0.0"),
   RUN_LEASE_SECONDS: z.coerce.number().int().positive().default(30),
   RUN_TIMEOUT_SECONDS: z.coerce.number().int().positive().max(3600).default(120),
   RUN_MAX_ACTIVE: z.coerce.number().int().positive().max(1000).default(64),
@@ -24,7 +26,15 @@ const env = z.object({
   RUN_USER_ACTIVE: z.coerce.number().int().min(1).max(1000).default(2),
   RUN_TENANT_ACTIVE: z.coerce.number().int().min(1).max(1000).default(32),
   RUN_AGING_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
+  RUN_CONTROL_KNOWLEDGE_SECRET: z.string().min(32).optional(),
+  KNOWLEDGE_RUN_CONTROL_SECRET: z.string().min(32).optional(),
 }).parse(process.env);
+const knowledgeKeys = [env.RUN_CONTROL_KNOWLEDGE_SECRET, env.KNOWLEDGE_RUN_CONTROL_SECRET];
+if (knowledgeKeys.some(Boolean) && (!knowledgeKeys.every(Boolean) || new Set([
+  ...knowledgeKeys, env.API_RUN_CONTROL_SECRET, env.RUNTIME_RUN_CONTROL_SECRET, env.RUN_CONTROL_CHAT_SECRET,
+  env.RUN_CONTROL_CATALOG_SECRET, env.RUN_CONTROL_WORKSPACE_SECRET, env.WORKSPACE_RUN_CONTROL_SECRET,
+  env.RUN_CONTROL_QUOTA_SECRET, env.RUN_CONTROL_AUDIT_SECRET, env.RUN_CONTROL_METRICS_SECRET,
+]).size !== 11)) throw new Error("Both knowledge keys must be configured and distinct from all other service keys");
 if (new Set([env.API_RUN_CONTROL_SECRET, env.RUNTIME_RUN_CONTROL_SECRET, env.RUN_CONTROL_CHAT_SECRET, env.RUN_CONTROL_CATALOG_SECRET,
   env.RUN_CONTROL_WORKSPACE_SECRET, env.WORKSPACE_RUN_CONTROL_SECRET, env.RUN_CONTROL_QUOTA_SECRET, env.RUN_CONTROL_AUDIT_SECRET, env.RUN_CONTROL_METRICS_SECRET]).size !== 9) {
   throw new Error("Distinct service secrets required");
@@ -47,9 +57,13 @@ const app = createRunControlApp({ repository, authenticateApi: auth.api, authent
   reserveQuota: support.reserve,
   signWorkspaceCapability: workspaceCapabilitySigner(env.RUN_CONTROL_WORKSPACE_SECRET),
   authenticateWorkspace: workspaceServiceVerifier(env.WORKSPACE_RUN_CONTROL_SECRET),
+  ...(env.RUN_CONTROL_KNOWLEDGE_SECRET && env.KNOWLEDGE_RUN_CONTROL_SECRET ? {
+    signKnowledgeCapability: knowledgeCapabilitySigner(env.RUN_CONTROL_KNOWLEDGE_SECRET),
+    authenticateKnowledge: knowledgeServiceVerifier(env.KNOWLEDGE_RUN_CONTROL_SECRET),
+  } : {}),
   ready: async () => {
     if (!consuming || nc.isClosed()) throw new Error("Consumer unavailable");
-    const result = await db.query("SELECT version FROM run_control.schema_migrations WHERE version=6");
+    const result = await db.query("SELECT version FROM run_control.schema_migrations WHERE version=7");
     if (!result.rows.length) throw new Error("Missing migration");
     await nc.flush();
   } });
@@ -76,10 +90,10 @@ const projections = backgroundWorkers(env.RUN_DELIVERY_WORKERS,stopped.signal,as
   ()=>app.log.warn("Assistant projection transaction failed; retry scheduled"));
 const publisher = backgroundWorkers(1,stopped.signal,async()=>await repository.publishBatch(async(subject,event)=>{
   await js.publish(subject,JSON.stringify(event),{msgID:event.eventId});
-})>0,()=>app.log.warn("Run event publish failed; retry scheduled"));
+})>0,()=>app.log.warn("Run event publish failed; retry scheduled"),100);
 const sweeper = backgroundWorkers(1,stopped.signal,async()=>{await repository.expireBatch();return false;},
   ()=>app.log.warn("Run lease sweep failed; retry scheduled"));
-await app.listen({ host: "0.0.0.0", port: env.PORT });
+await app.listen({ host: env.HOST, port: env.PORT });
 async function stop() {
   if (stopping) return; stopping = true; stopped.abort(); void messages?.close().catch(() => undefined);
   await app.close(); await Promise.all([consumerTask, projections, publisher, sweeper, supportTask]); await nc.drain(); await close();

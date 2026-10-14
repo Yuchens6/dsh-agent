@@ -1,5 +1,8 @@
 # dsh-agent-stream：事件流服务
 
+第十三阶段支持排队／执行阶段、实时正文预览与最终快照，复用同一会话流、鉴权和游标恢复。
+客户端兼容约定见 [实时反馈说明](../docs/realtime-feedback.zh-CN.md)；连接限额和凭证有效期不变。
+
 本服务监听 8080 端口，提供 SSE（Server-Sent Events，服务器发送事件）：
 
 ```text

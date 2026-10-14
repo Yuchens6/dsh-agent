@@ -7,7 +7,7 @@ import { CreateSession, IdempotencyKey, SendMessage, ResourceId, Session, Sessio
   Run, RunPage, RunListQuery, type Principal } from "@dsh-agent/contracts";
 import { ApiError, type ChatClient, type CallContext } from "./chat-client.js";
 import { Admission } from "./admission.js";
-import { QuotaUsage, AuditPage, UpdateSession, ModelUsageQuery, ModelUsageSummary, WorkflowProgress, PointsBalance, PointsLedgerPage } from "@dsh-agent/contracts";
+import { QuotaUsage, AuditPage, UpdateSession, ModelUsageQuery, ModelUsageSummary, WorkflowProgress, PointsBalance, PointsLedgerPage, StudioState, StudioPublish } from "@dsh-agent/contracts";
 
 export function createApiApp(options: {
   authenticate: (header?: string) => Promise<Principal>; chat: ChatClient; logger?: boolean;
@@ -130,6 +130,11 @@ export function createApiApp(options: {
       workspace(ctx(req), "DELETE", workspacePath(req.params) + "/file" + queryString(DeleteFileQuery.parse(req.query)),
         DeleteFileResult));
     routes.get("/definitions", async req => catalog(ctx(req), "GET", "/definitions", DefinitionPage));
+    routes.get("/studio", async req => catalog(ctx(req), "GET", "/studio", StudioState));
+    routes.post("/studio/agents", async req => {
+      if (!ctx(req).actor.roles.includes("tenant-admin")) throw new ApiError(403, "FORBIDDEN");
+      return catalog(ctx(req), "POST", "/studio/agents", AgentDefinition, StudioPublish.parse(req.body));
+    });
     routes.get("/definitions/:id/versions/:version", async req => {
       const params = z.object({ id: IdentityId, version: z.coerce.number().int().positive() }).parse(req.params);
       return catalog(ctx(req), "GET", "/definitions/" + params.id + "/versions/" + params.version, AgentDefinition);

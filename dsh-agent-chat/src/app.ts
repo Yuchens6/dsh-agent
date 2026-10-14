@@ -44,7 +44,7 @@ export function createChatApp(options: {
     routes.post("/sessions", async (req, reply) => {
       const body = CreateSession.parse(req.body);
       const key = IdempotencyKey.parse(req.headers["idempotency-key"]);
-      return reply.code(201).send(await options.repository.create(actor(req), body.title, key, req.id));
+      return reply.code(201).send(await options.repository.create(actor(req), body.title, key, req.id, body.definition));
     });
     routes.get("/sessions", async req => {
       const page = PageQuery.parse(req.query);

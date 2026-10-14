@@ -7,6 +7,7 @@ export async function serviceDatabase(...schemas: Array<"chat" | "workspace" | "
   for (const schema of schemas) {
     await pg.exec("CREATE SCHEMA " + schema);
     await pg.exec(await readFile(new URL("../dsh-agent-" + schema.replaceAll("_", "-") + "/migrations/001_initial.sql", import.meta.url), "utf8"));
+    if (schema === "catalog") await pg.exec(await readFile(new URL("../dsh-agent-catalog/migrations/002_studio.sql", import.meta.url), "utf8"));
     if (schema === "chat" || schema === "run_control") {
       await pg.exec(await readFile(new URL("../dsh-agent-" + schema.replaceAll("_", "-") + "/migrations/002_execution.sql", import.meta.url), "utf8"));
     }
@@ -14,6 +15,7 @@ export async function serviceDatabase(...schemas: Array<"chat" | "workspace" | "
     if (schema === "run_control") await pg.exec(await readFile(new URL("../dsh-agent-run-control/migrations/004_usage.sql", import.meta.url), "utf8"));
     if (schema === "run_control") await pg.exec(await readFile(new URL("../dsh-agent-run-control/migrations/005_workflow.sql", import.meta.url), "utf8"));
     if (schema === "run_control") await pg.exec(await readFile(new URL("../dsh-agent-run-control/migrations/006_dispatch.sql", import.meta.url), "utf8"));
+    if (schema === "run_control") await pg.exec(await readFile(new URL("../dsh-agent-run-control/migrations/007_progress.sql", import.meta.url), "utf8"));
     if (schema === "quota") await pg.exec(await readFile(new URL("../dsh-agent-quota/migrations/002_usage.sql", import.meta.url), "utf8"));
     if (schema === "quota") await pg.exec(await readFile(new URL("../dsh-agent-quota/migrations/003_points.sql", import.meta.url), "utf8"));
     if (schema === "chat") await pg.exec(await readFile(new URL("../dsh-agent-chat/migrations/003_lifecycle.sql", import.meta.url), "utf8"));

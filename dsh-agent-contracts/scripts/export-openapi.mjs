@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as c from "../dist/index.js";
 const names = ["Principal", "CreateSession", "Session", "SessionPage", "SendMessage", "Message",
   "MessagePage", "Subscription", "ErrorEnvelope", "PublicEvent", "Workspace", "FileMetadata", "PointsBalance", "PointsLedgerPage",
-  "TextFile", "WriteTextFile", "FilePage", "DeleteFileResult", "AgentDefinition", "DefinitionPage", "Run", "RunPage", "UpdateSession", "QuotaUsage", "AuditPage", "ModelUsageSummary", "WorkflowProgress"];
+  "TextFile", "WriteTextFile", "FilePage", "DeleteFileResult", "AgentDefinition", "DefinitionPage", "StudioPublish", "StudioState", "Run", "RunPage", "UpdateSession", "QuotaUsage", "AuditPage", "ModelUsageSummary", "WorkflowProgress"];
 const schemas = Object.fromEntries(names.map(name => {
   const schema = z.toJSONSchema(c[name], { target: "draft-2020-12" });
   delete schema.$schema;
@@ -69,8 +69,11 @@ const document = {
       delete: operation("DeleteFileResult", 200, { parameters: [filePath, fileVersion] }),
     },
     "/api/v1/definitions": { get: operation("DefinitionPage", 200, {
-      description: "当前租户获得授权的已发布定义摘要，最多 100 个版本。不允许客户端发布或编辑。",
+      description: "当前租户获得授权的已发布定义摘要，最多 100 个版本。kind 区分智能体和工作流；默认版本仅用于未指定 definition 的新会话。",
     }) },
+    "/api/v1/studio": { get: operation("StudioState", 200, { description: "工作台开关、服务端判定的发布权限和本租户自定义定义元数据。" }) },
+    "/api/v1/studio/agents": { post: operation("AgentDefinition", 200, { requestBody: { required: true, ...json("StudioPublish") },
+      description: "仅租户管理员受限发布。expectedVersion=0 创建；更新必须匹配当前版本；相同请求可精确重放。模型、知识源、执行预算继承已授权平台模板；工具只能缩减。不会改变默认定义。" }) },
     "/api/v1/definitions/{id}/versions/{version}": {
       parameters: [
         { in: "path", name: "id", required: true, schema: { type: "string" } },
@@ -108,7 +111,8 @@ await writeFile(new URL("../openapi.json", import.meta.url), JSON.stringify(docu
 
 // 内部执行协议独立成文档，不能据此在公网网关创建路由。
 const internalNames = ["RunLease", "ClaimResult", "FinishRun", "ExecutionContext", "ExecutionInput", "AssistantResult", "AssistantMessage",
-  "WorkspaceCapability", "WorkspaceAuthorizationRequest", "WorkspaceAuthorization", "WorkspaceToolCall", "WorkspaceToolResult", "WorkerUsageReport", "UsageRecorded", "WorkflowNext", "WorkflowStepResult"];
+  "WorkspaceCapability", "WorkspaceAuthorizationRequest", "WorkspaceAuthorization", "WorkspaceToolCall", "WorkspaceToolResult", "WorkerUsageReport", "WorkerProgress", "UsageRecorded",
+  "KnowledgeAuthorizationRequest", "KnowledgeAuthorization", "KnowledgeToolCall", "KnowledgeToolResult"];
 const internalSchemas = { ...schemas, ...Object.fromEntries(internalNames.map(name => {
   const schema = z.toJSONSchema(c[name], { target: "draft-2020-12" }); delete schema.$schema;
   return [name, schema];
@@ -121,8 +125,9 @@ const internal = {
   security: [{ workerAuth: [] }],
   paths: {
     "/worker/v1/claim": { post: operation("ClaimResult") },
-    "/worker/v1/runs/{runId}/workflow/next": { parameters: [workerId], post: operation("WorkflowNext",200,{ requestBody: body("RunLease"), description: "有效租约下启动或返回当前步骤，服务端基于最近成功输出判断条件并记录跳过；不是崩溃后自动恢复授权。" }) },
-    "/worker/v1/runs/{runId}/workflow/result": { parameters: [workerId], post: operation("UsageRecorded",200,{ requestBody: body("WorkflowStepResult"), description: "幂等保存当前步骤输出；至少一次模型调用且计量报告完整到达。只重传结果，不重跑步骤。" }) },
+    "/worker/v1/runs/{runId}/knowledge-capability": { parameters: [workerId], post: operation("WorkspaceCapability", 200, { requestBody: body("RunLease"), description: "知识专用能力令牌，独立受众和密钥，不可替代工作区能力。需有效租约和允许知识检索的冻结定义。" }) },
+    "/authorization/v1/knowledge": { post: operation("KnowledgeAuthorization", 200, { security: [{ knowledgeServiceAuth: [] }], requestBody: body("KnowledgeAuthorizationRequest"), description: "核验知识工具、源标识、当前工作流步骤和在线租约。知识服务还须检查用户对源的显式授权。" }) },
+    "/worker/v1/runs/{runId}/progress": { parameters: [workerId], post: operation("UsageRecorded", 200, { requestBody: body("WorkerProgress"), description: "有效租约下持久化受控状态/正文预览；同序号同正文幂等，冲突或跳号拒绝。每运行最多4096条、1MiB正文；不含内部推理或工具参数。" }) },
     "/worker/v1/runs/{runId}/usage": { parameters: [workerId], post: operation("UsageRecorded", 200, { requestBody: body("WorkerUsageReport"), description: "开始调用必须持有有效租约；最终计量允许同一执行身份在租约失效后补报已经开始的调用，不恢复执行权限。同一调用最终数据不可改写。" }) },
     "/worker/v1/runs/{runId}/input": { parameters: [workerId], post: operation("ExecutionInput", 200, { requestBody: body("RunLease") }) },
     "/worker/v1/runs/{runId}/workspace-capability": { parameters: [workerId], post: operation("WorkspaceCapability", 200, { requestBody: body("RunLease"),
@@ -139,7 +144,8 @@ const internal = {
     } } },
     "/execution/v1/sessions/{sessionId}/messages/{messageId}/context": { parameters: [id,
       { in: "path", name: "messageId", required: true, schema: { type: "string", format: "uuid" } }],
-      get: operation("ExecutionContext", 200, { security: [{ runControlAuth: [] }] }) },
+      get: operation("ExecutionContext", 200, { security: [{ runControlAuth: [] }],
+        description: "截至目标提问的完整聊天记录，不按总轮数/字符数裁剪；模型上下文由 DSH 管理。序列化历史超过8MiB整体拒绝（413），不会返回裁剪记录。truncated仅兼容旧快照，新响应始终为false。" }) },
     "/execution/v1/sessions/{sessionId}/assistant-results": { parameters: [id],
       post: operation("AssistantMessage", 200, { security: [{ runControlAuth: [] }], requestBody: body("AssistantResult") }) },
   }, components: { schemas: internalSchemas, securitySchemes: {
@@ -147,9 +153,18 @@ const internal = {
     runControlAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "运行控制签发，受众为会话服务；携带经授权的用户主体。" },
     workspaceServiceAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "工作区服务签发，独立授权查询凭据，执行器不可持有。" },
     workspaceCapability: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "运行控制签发的三十秒运行能力令牌，不能调用文件管理接口。" },
+    knowledgeServiceAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "知识服务查询在线运行授权的专用凭据。" },
   } },
 };
 await writeFile(new URL("../execution-openapi.json", import.meta.url), JSON.stringify(internal, null, 2) + "\n");
+// Identical path on a different internal service; do not merge it with Workspace's endpoint.
+const knowledge = { openapi: "3.1.0", info: { title: "知识访问内部协议（Knowledge API）", version: "0.1.0" },
+  security: [{ knowledgeCapability: [] }], paths: {
+    "/execution/v1/tools": { post: operation("KnowledgeToolResult", 200, { requestBody: body("KnowledgeToolCall"), description: "只读知识检索：管理员选择 PostgreSQL 全文/结构化/图谱/无向量混合，或 LightRAG。filters 仅接受允许的结构化字段等值过滤；mode 仅控制 LightRAG 检索。检索前后在线授权，来源需定义与用户双重授权；不接收任意 URL、SQL、Cypher 或凭据。返回有界证据，不包含上游路径元数据。" }) },
+  }, components: { schemas: internalSchemas, securitySchemes: {
+    knowledgeCapability: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "运行控制签发，知识专用受众与 scope，最长30秒；执行节点凭据不可替代。" },
+  } } };
+await writeFile(new URL("../knowledge-openapi.json", import.meta.url), JSON.stringify(knowledge, null, 2) + "\n");
 const supportSchemas = Object.fromEntries(["QuotaReserve", "QuotaClose", "QuotaUsage", "AuditRecord", "AuditPage", "ErrorEnvelope", "ModelUsageEvent", "ModelUsageSummary", "PointsBalance", "PointsLedgerPage"].map(name => {
   const schema = z.toJSONSchema(c[name]); delete schema.$schema; return [name, schema];
 }));

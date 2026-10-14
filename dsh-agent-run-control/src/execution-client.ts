@@ -1,6 +1,6 @@
 import { SignJWT } from "jose";
 import { z } from "zod";
-import { AgentDefinition, ExecutionContext, AssistantMessage, ExecutionInput, type AssistantResult, type Principal, type Run } from "@dsh-agent/contracts";
+import { AgentDefinition, ExecutionContext, AssistantMessage, ExecutionInput, EXECUTION_INPUT_MAX_BYTES, type AssistantResult, type Principal, type Run } from "@dsh-agent/contracts";
 import { RunError } from "./repository.js";
 
 export function executionClient(config: { chatUrl: string; catalogUrl: string; chatSecret: string; catalogSecret: string }) {
@@ -13,7 +13,7 @@ export function executionClient(config: { chatUrl: string; catalogUrl: string; c
       throw new Error("Service URL must be an HTTP origin");
     }
   }
-  async function request<T>(service: "chat" | "catalog", actor: Principal, path: string, schema: z.ZodType<T>, body?: unknown): Promise<T> {
+  async function request<T>(service: "chat" | "catalog", actor: Principal, path: string, schema: z.ZodType<T>, body?: unknown, maxBytes = 1024 * 1024): Promise<T> {
     const key = new TextEncoder().encode(service === "chat" ? config.chatSecret : config.catalogSecret);
     const token = await new SignJWT({ actor }).setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setIssuer("dsh-agent-run-control").setAudience("dsh-agent-" + service).setSubject(actor.uid)
@@ -39,7 +39,7 @@ export function executionClient(config: { chatUrl: string; catalogUrl: string; c
           const part = await reader.read();
           if (part.done) break;
           size += part.value.byteLength;
-          if (size > 1024 * 1024) throw new Error("Oversized dependency response");
+          if (size > maxBytes) throw new Error("Oversized dependency response");
           chunks.push(part.value);
         }
       } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
@@ -51,7 +51,7 @@ export function executionClient(config: { chatUrl: string; catalogUrl: string; c
   }
   return {
     async resolve(actor: Principal, run: Run): Promise<ExecutionInput> {
-      const context = await request("chat", actor, `/execution/v1/sessions/${run.sessionId}/messages/${run.messageId}/context`, ExecutionContext);
+      const context = await request("chat", actor, `/execution/v1/sessions/${run.sessionId}/messages/${run.messageId}/context`, ExecutionContext, undefined, EXECUTION_INPUT_MAX_BYTES);
       const definition = await request("catalog", actor,
         `/internal/v1/definitions/${context.binding.agentDefinitionId}/versions/${context.binding.agentDefinitionVersion}`, AgentDefinition);
       return ExecutionInput.parse({ runId: run.id, context, definition, capturedAt: new Date().toISOString() });

@@ -14,6 +14,7 @@ import type { Database } from "../dsh-agent-run-control/src/database.js";
 import { executionClient } from "../dsh-agent-run-control/src/execution-client.js";
 import { createRunControlApp } from "../dsh-agent-run-control/src/app.js";
 import { authenticators } from "../dsh-agent-run-control/src/auth.js";
+import { runtimeClient } from "../dsh-agent-runtime-dsh/src/client.js";
 import { serviceDatabase, definition, serviceSecrets } from "./workspace-catalog-helpers.js";
 import { alice, bob, otherTenant, testBinding, secret } from "./helpers.js";
 const chatKey = "test-only-run-control-chat-separate-32-bytes";
@@ -68,19 +69,24 @@ test("执行上下文：完整问答对、未来消息排除、投影幂等及�
   await assert.rejects(chat.executionContext(alice, session.id, first.id), /INVALID_STATE/);
 });
 
-test("执行上下文：字符预算保留完整问答，最多二十轮，不拆分当前消息", async t => {
+test("执行历史：超过二十轮和 64000 字符仍完整导出，跨读取批次不丢记录", async t => {
   const { pg, db } = await serviceDatabase("chat"); t.after(() => pg.close());
-  const chat = new ChatRepository(db, testBinding);
+  const chat = new ChatRepository(db, testBinding, { messagesPerMinute: 1000,pendingPerUser: 1000,pendingPerSession: 1000 });
   const session = await chat.create(alice, "bounded", "session-key-001", "test");
   const first = await chat.send(alice, session.id, "a".repeat(32_000), "message-key-001", "test");
   await chat.appendAssistant(alice, session.id, { runId: randomUUID(), messageId: first.id, output: "b".repeat(32_000) });
   const second = await chat.send(alice, session.id, "c".repeat(32_000), "message-key-002", "test");
   const context = await chat.executionContext(alice, session.id, second.id);
-  assert.equal(context.truncated, true); assert.deepEqual(context.messages.map(m => m.id), [second.id]);
+  assert.equal(context.truncated, false);
+  assert.equal(context.messages.reduce((sum,m) => sum + m.content.length,0), 96_000);
+  assert.deepEqual(context.messages.filter(m => m.role === "user").map(m => m.id), [first.id,second.id]);
   let last = second;
-  for (let i = 0; i < 21; i++) last = await chat.send(alice, session.id, "small", "small-key-" + i, "test");
+  for (let i = 0; i < 121; i++) {
+    last = await chat.send(alice, session.id, "small", "small-key-" + i, "test");
+  }
   const bounded = await chat.executionContext(alice, session.id, last.id);
-  assert.equal(bounded.messages.length, 20); assert.equal(bounded.truncated, true);
+  assert.equal(bounded.messages.length, 124); assert.equal(bounded.truncated, false);
+  assert.equal(bounded.messages[0]!.id, first.id); assert.equal(bounded.messages.at(-1)!.id,last.id);
 });
 
 test("运行输入：快照冻结、重复获取不重查，失效租约和跨资源响应拒绝", async t => {
@@ -116,6 +122,20 @@ test("运行输入：快照冻结、重复获取不重查，失效租约和跨�
   }), /LEASE_LOST/);
 });
 
+test("历史传输保护：超限显式拒绝，不能删除或静默裁剪聊天记录", async t => {
+  const { pg,db } = await serviceDatabase("chat"); t.after(() => pg.close());
+  const chat = new ChatRepository(db,testBinding,{ messagesPerMinute: 1000,pendingPerUser: 1000,pendingPerSession: 1000 });
+  const session = await chat.create(alice,"transport limit","context-session","test");
+  let last;
+  for (let i = 0; i < 140; i++) {
+    last = await chat.send(alice,session.id,"x".repeat(32_000),"history-"+i,"test");
+    await chat.appendAssistant(alice,session.id,{ runId: randomUUID(),messageId: last.id,output: "y".repeat(32_000) });
+  }
+  await assert.rejects(chat.executionContext(alice,session.id,last!.id),error =>
+    error instanceof Error && "status" in error && error.status === 413);
+  assert.equal(Number((await db.query("SELECT count(*) AS count FROM chat.conversation_messages WHERE session_id=$1",[session.id])).rows[0]!.count),280);
+});
+
 test("回答投影：跨库提交后确认丢失重传、会话屏障、退避且不阻塞其他会话", async t => {
   const chatDb = await serviceDatabase("chat"), runDb = await serviceDatabase("run_control");
   t.after(async () => { await chatDb.pg.close(); await runDb.pg.close(); });
@@ -126,6 +146,8 @@ test("回答投影：跨库提交后确认丢失重传、会话屏障、退避�
   const next = await runs.accept(command(session.id));
   const claim = (await runs.claim("worker-a"))!;
   const completed = { ...claim.lease, state: "succeeded", output: "durable answer" };
+  await runs.publishBatch(async (_subject, event) => { assert.equal(event.eventType, "run.status.v1"); });
+  await runs.publishBatch(async (_subject, event) => { assert.equal(event.eventType, "run.status.v1"); });
   await assert.rejects(runs.finish("worker-a", run.id, { ...completed, output: "bad\0text" }), /INVALID_REQUEST/);
   const brokenTicket: Database = { query: runDb.db.query, transaction: work => runDb.db.transaction(tx => work({ query: (sql, values) => {
     if (sql.startsWith("INSERT INTO run_control.result_projections")) throw new Error("ticket failed");
@@ -133,7 +155,7 @@ test("回答投影：跨库提交后确认丢失重传、会话屏障、退避�
   } })) };
   await assert.rejects(new RunRepository(brokenTicket).finish("worker-a", run.id, completed), /ticket failed/);
   assert.equal((await runs.get(alice, run.id)).state, "running");
-  assert.equal((await runDb.db.query("SELECT * FROM run_control.outbox")).rows.length, 0);
+  assert.equal((await runDb.db.query("SELECT * FROM run_control.outbox WHERE envelope->>'eventType'<>'run.status.v1'")).rows.length, 0);
   await runs.finish("worker-a", run.id, completed);
   const deliver = async (actor: Principal, id: string, value: unknown) => { await chat.appendAssistant(actor, id, value); };
   const broken: Database = { query: runDb.db.query, transaction: work => runDb.db.transaction(tx => work({ query: (sql, values) => {
@@ -199,6 +221,24 @@ test("执行 HTTP：独立凭据、精确版本授权、有效租约快照与助
   const nextInput = await runs.input("worker-a", next.id, nextClaim.lease, client.resolve);
   assert.equal(nextInput.context.messages[1]!.role, "assistant");
   assert.equal(nextInput.definition.version, 1);
+  // Exercise both authenticated HTTP clients above the former 1 MiB response ceiling.
+  const largeSession = await chat.create(alice,"large history","large-session-key","test");
+  for (let i = 0; i < 20; i++) {
+    const message = await chat.send(alice,largeSession.id,"u".repeat(32_000),"large-history-"+i,"test");
+    await chat.appendAssistant(alice,largeSession.id,{ runId: randomUUID(),messageId: message.id,output: "a".repeat(32_000) });
+  }
+  const current = await chat.send(alice,largeSession.id,"latest task","large-current-key","test");
+  const largeRun = await runs.accept(command(largeSession.id,current.id));
+  const controlUrl = await app.listen({ host: "127.0.0.1",port: 0 });
+  const runtime = runtimeClient({ runControlUrl: controlUrl,workspaceUrl: controlUrl,workerId: "large-worker",secret: workerKey });
+  const largeClaim = (await runtime.claim())!;
+  assert.equal(largeClaim.run.id,largeRun.id);
+  const complete = await runtime.input(largeClaim,AbortSignal.timeout(10_000));
+  assert.equal(complete.context.messages.length,41);
+  assert.ok(Buffer.byteLength(JSON.stringify(complete)) > 1024 * 1024);
+  assert.equal(complete.context.truncated,false);
+  assert.equal(complete.context.messages.at(-1)!.id,current.id);
+  await runs.cancel(alice,largeRun.id); await runtime.release(largeClaim);
   await chatDb.db.query("DELETE FROM catalog.tenant_definitions WHERE tenant_id=$1", [alice.tenantId]);
   assert.deepEqual(await runs.input("worker-a", next.id, nextClaim.lease, client.resolve), nextInput);
   const third = await chat.send(alice, session.id, "message three", "message-key-003", "test");

@@ -8,5 +8,7 @@ try {
     await tx.query("CREATE TABLE IF NOT EXISTS catalog.schema_migrations(version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
     const result = await tx.query("SELECT version FROM catalog.schema_migrations WHERE version=1");
     if (!result.rows.length) await tx.query(await readFile(new URL("../migrations/001_initial.sql", import.meta.url), "utf8"));
+    const studio = await tx.query("SELECT version FROM catalog.schema_migrations WHERE version=2");
+    if (!studio.rows.length) await tx.query(await readFile(new URL("../migrations/002_studio.sql", import.meta.url), "utf8"));
   });
 } finally { await close(); }

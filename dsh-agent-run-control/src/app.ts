@@ -6,6 +6,7 @@ import { RunError, type RunRepository } from "./repository.js";
 import { registerMetrics, type MetricsOptions } from "./metrics.js";
 import { WorkerUsageReport } from "@dsh-agent/contracts";
 import { DatabaseCapacityError } from "./capacity.js";
+import { KnowledgeAuthorizationRequest } from "@dsh-agent/contracts";
 export function createRunControlApp(options: {
   repository: RunRepository;
   metrics?: MetricsOptions;
@@ -15,6 +16,8 @@ export function createRunControlApp(options: {
   reserveQuota?: (actor: Principal, input: ExecutionInput, deadlineAt: string) => Promise<void>;
   authenticateWorkspace?: (header?: string) => Promise<void>;
   signWorkspaceCapability?: (reference: WorkspaceRunReference, expiresAt: number) => Promise<WorkspaceCapability>;
+  authenticateKnowledge?: (header?: string) => Promise<void>;
+  signKnowledgeCapability?: (reference: WorkspaceRunReference, expiresAt: number) => Promise<WorkspaceCapability>;
   ready: () => Promise<void>; logger?: boolean;
 }) {
   const app = Fastify({ bodyLimit: 256 * 1024, genReqId: () => randomUUID(),
@@ -60,8 +63,6 @@ export function createRunControlApp(options: {
     });
     routes.post("/runs/:runId/heartbeat", async req =>
       options.repository.heartbeat(workers.get(req)!, id(req.params), RunLease.parse(req.body)));
-    routes.post("/runs/:runId/workflow/next", async req => options.repository.workflowNext(workers.get(req)!, id(req.params), RunLease.parse(req.body)));
-    routes.post("/runs/:runId/workflow/result", async req => options.repository.workflowResult(workers.get(req)!, id(req.params), req.body));
     routes.post("/runs/:runId/input", async req => {
       if (!options.resolveInput) throw new RunError(503, "DEPENDENCY_UNAVAILABLE");
       return options.repository.input(workers.get(req)!, id(req.params), RunLease.parse(req.body), options.resolveInput, options.reserveQuota);
@@ -70,12 +71,17 @@ export function createRunControlApp(options: {
       if (!options.signWorkspaceCapability) throw new RunError(503, "DEPENDENCY_UNAVAILABLE");
       return options.repository.workspaceCapability(workers.get(req)!, id(req.params), RunLease.parse(req.body), options.signWorkspaceCapability);
     });
+    routes.post("/runs/:runId/knowledge-capability", async req => {
+      if (!options.signKnowledgeCapability) throw new RunError(503, "DEPENDENCY_UNAVAILABLE");
+      return options.repository.knowledgeCapability(workers.get(req)!, id(req.params), RunLease.parse(req.body), options.signKnowledgeCapability);
+    });
     routes.post("/runs/:runId/result", async req =>
       options.repository.finish(workers.get(req)!, id(req.params), FinishRun.parse(req.body)));
     routes.post("/runs/:runId/usage", async req => {
       const body = WorkerUsageReport.parse(req.body);
       return options.repository.reportUsage(workers.get(req)!, id(req.params), body.lease, body.report);
     });
+    routes.post("/runs/:runId/progress", async req => options.repository.reportProgress(workers.get(req)!, id(req.params), req.body));
     routes.post("/runs/:runId/release", async req =>
       options.repository.release(workers.get(req)!, id(req.params), RunLease.parse(req.body)));
   }, { prefix: "/worker/v1" });
@@ -87,5 +93,12 @@ export function createRunControlApp(options: {
     });
     routes.post("/workspace", async req => options.repository.authorizeWorkspace(WorkspaceAuthorizationRequest.parse(req.body)));
   }, { prefix: "/authorization/v1" });
+  app.post("/authorization/v1/knowledge", { onRequest: async req => {
+    if (!options.authenticateKnowledge) throw new RunError(401, "UNAUTHENTICATED");
+    await options.authenticateKnowledge(req.headers.authorization);
+  } }, async req => {
+    z.object({}).strict().parse(req.query);
+    return options.repository.authorizeKnowledge(KnowledgeAuthorizationRequest.parse(req.body));
+  });
   return app;
 }

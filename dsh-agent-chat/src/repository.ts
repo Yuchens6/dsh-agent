@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { v7 as uuid } from "uuid";
-import { SessionBinding, AssistantResult, ExecutionContext, type Principal, type Session, type Message, type PublicEvent } from "@dsh-agent/contracts";
+import { SessionBinding, AssistantResult, ExecutionContext, EXECUTION_HISTORY_MAX_BYTES, type Principal, type Session, type Message, type PublicEvent } from "@dsh-agent/contracts";
 import type { Database, Sql } from "./database.js";
-import { UpdateSession } from "@dsh-agent/contracts";
+import { UpdateSession, DefinitionReference } from "@dsh-agent/contracts";
 import { enqueueAudit, publishAuditBatch } from "./audit.js";
 import type { ChatAuditRecord } from "@dsh-agent/contracts";
 import { admitMessage, defaultAdmission, validateAdmission, type AdmissionPolicy } from "./admission.js";
@@ -24,7 +24,7 @@ const message = (r: Record<string, unknown>): Message => ({
   content: String(r.content), createdAt: timestamp(r.created_at),
 });
 export class ChatRepository {
-  constructor(private db: Database, private provision: (actor: Principal) => Promise<SessionBinding>, private admission: AdmissionPolicy = defaultAdmission) { validateAdmission(admission); }
+  constructor(private db: Database, private provision: (actor: Principal, definition?: DefinitionReference) => Promise<SessionBinding>, private admission: AdmissionPolicy = defaultAdmission) { validateAdmission(admission); }
 
   private async own(tx: Sql, actor: Principal, id: string, lock = false) {
     const { rows } = await tx.query(
@@ -76,22 +76,27 @@ export class ChatRepository {
       const target = await tx.query("SELECT * FROM chat.conversation_messages WHERE id=$1 AND session_id=$2 AND role='user'",
         [messageId, id]);
       if (!target.rows[0]) throw new ChatError(404, "NOT_FOUND");
-      const users = await tx.query("SELECT * FROM chat.conversation_messages WHERE session_id=$1 AND role='user' AND position<=$2 ORDER BY position DESC LIMIT 21",
-        [id, target.rows[0].position]);
-      const answers = await tx.query("SELECT * FROM chat.conversation_messages WHERE session_id=$1 AND role='assistant' AND reply_to_message_id=ANY($2::uuid[])",
-        [id, users.rows.map(row => row.id)]);
-      const replies = new Map(answers.rows.map(row => [String(row.reply_to_message_id), row]));
       const messages: Message[] = [];
-      let length = 0, truncated = users.rows.length > 20;
-      for (const row of users.rows.slice(0, 20)) {
-        const answer = row.id === messageId ? undefined : replies.get(String(row.id));
-        const pair = [message(row), ...(answer ? [message(answer)] : [])];
-        const size = pair.reduce((sum, item) => sum + item.content.length, 0);
-        // 保留完整问答对，不截断字符；当前用户消息必须包含在内。
-        if (length + size > 64_000) { truncated = true; break; }
-        messages.unshift(...pair); length += size;
+      let cursor: unknown = null, bytes = 2;
+      // 数据库分页不是上下文保留策略；导出截至当前提问的全部记录。
+      while (true) {
+        const users = await tx.query("SELECT * FROM chat.conversation_messages WHERE session_id=$1 AND role='user' AND position<=$2 " +
+          "AND ($3::bigint IS NULL OR position>$3) ORDER BY position LIMIT 100", [id, target.rows[0].position, cursor]);
+        if (!users.rows.length) break;
+        const answers = await tx.query("SELECT * FROM chat.conversation_messages WHERE session_id=$1 AND role='assistant' AND reply_to_message_id=ANY($2::uuid[])",
+          [id, users.rows.map(row => row.id)]);
+        const replies = new Map(answers.rows.map(row => [String(row.reply_to_message_id), row]));
+        for (const row of users.rows) {
+          const answer = row.id === messageId ? undefined : replies.get(String(row.id));
+          for (const item of [message(row), ...(answer ? [message(answer)] : [])]) {
+            bytes += Buffer.byteLength(JSON.stringify(item)) + (messages.length ? 1 : 0);
+            if (bytes > EXECUTION_HISTORY_MAX_BYTES) throw new ChatError(413, "INVALID_REQUEST");
+            messages.push(item);
+          }
+        }
+        cursor = users.rows.at(-1)!.position;
       }
-      return ExecutionContext.parse({ sessionId: id, messageId, messages, truncated,
+      return ExecutionContext.parse({ sessionId: id, messageId, messages, truncated: false,
         binding: { workspaceId: conversation.workspace_id, agentDefinitionId: conversation.agent_definition_id,
           agentDefinitionVersion: Number(conversation.agent_definition_version) } });
     });
@@ -135,8 +140,9 @@ export class ChatRepository {
         [command.eventId, id, "agent.commands.run.requested.v1", JSON.stringify(command)]);
     }
   }
-  async create(actor: Principal, title: string, key: string, traceId: string) {
-    const requestHash = hash({ title });
+  async create(actor: Principal, title: string, key: string, traceId: string, selection?: DefinitionReference) {
+    const definition = selection === undefined ? undefined : DefinitionReference.parse(selection);
+    const requestHash = hash({ title, ...(definition ? { definition } : {}) });
     // 已成功的幂等重放不依赖定义中心或工作区在线，也不会切换已绑定版本。
     const prior = await this.db.query(
       "SELECT * FROM chat.conversations WHERE tenant_id=$1 AND owner_uid=$2 AND idempotency_key=$3",
@@ -145,7 +151,7 @@ export class ChatRepository {
       if (prior.rows[0].request_hash !== requestHash) throw new ChatError(409, "IDEMPOTENCY_CONFLICT");
       return session(prior.rows[0]);
     }
-    const binding = SessionBinding.parse(await this.provision(actor));
+    const binding = SessionBinding.parse(await this.provision(actor, definition));
     return this.db.transaction(async tx => {
       const { rows } = await tx.query(
         "INSERT INTO chat.conversations(id,tenant_id,owner_uid,title,agent_definition_id,agent_definition_version," +

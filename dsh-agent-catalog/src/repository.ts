@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AgentDefinition, DefinitionSummary, IdentityId, type Principal, type ErrorCode } from "@dsh-agent/contracts";
-import type { Database } from "./database.js";
+import type { Database, Sql } from "./database.js";
 export class CatalogError extends Error {
   constructor(public status: number, public code: ErrorCode) { super(code); }
 }
@@ -24,7 +24,7 @@ export class CatalogRepository {
     return { items: result.rows.map(r => {
       const d = AgentDefinition.parse(r.document);
       return DefinitionSummary.parse({ id: d.id, version: d.version, name: d.name,
-        description: d.description, tools: d.tools, isDefault: r.is_default });
+        description: d.description, tools: d.tools, isDefault: r.is_default, kind: d.workflow ? "workflow" : "agent" });
     }) };
   }
   async getDefault(actor: Principal) {
@@ -40,16 +40,22 @@ export class CatalogRepository {
     if (!result.rows[0]) throw new CatalogError(404, "NOT_FOUND");
     return AgentDefinition.parse(result.rows[0].document);
   }
-  // 只供管理员命令行发布；HTTP 服务没有写路由，也不接受前端插件配置。
+  // Full definitions remain operator-only. Studio uses a separate constrained publishing path.
   async publish(input: unknown, tenantId: string, makeDefault: boolean) {
     const definition = AgentDefinition.parse(input);
     IdentityId.parse(tenantId);
     if (new Set(definition.tools).size !== definition.tools.length ||
       new Set(definition.skills.map(s => s.id)).size !== definition.skills.length) throw new CatalogError(400, "INVALID_REQUEST");
-    const serialized = JSON.stringify(definition);
-    const hash = createHash("sha256").update(serialized).digest("hex");
     await this.db.transaction(async tx => {
       await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [tenantId]);
+      await this.persist(tx, definition, tenantId, makeDefault);
+    });
+    return definition;
+  }
+  // Caller must hold the tenant advisory lock. Published versions are always immutable.
+  async persist(tx: Sql, definition: AgentDefinition, tenantId: string, makeDefault: boolean) {
+    const serialized = JSON.stringify(AgentDefinition.parse(definition));
+    const hash = createHash("sha256").update(serialized).digest("hex");
       await tx.query("INSERT INTO catalog.definitions(id,version,document,document_hash) VALUES($1,$2,$3,$4) " +
         "ON CONFLICT(id,version) DO NOTHING", [definition.id, definition.version, serialized, hash]);
       const existing = await tx.query("SELECT document_hash FROM catalog.definitions WHERE id=$1 AND version=$2",
@@ -63,7 +69,5 @@ export class CatalogRepository {
         "VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id,definition_id,definition_version) " +
         "DO UPDATE SET is_default=catalog.tenant_definitions.is_default OR EXCLUDED.is_default",
         [tenantId, definition.id, definition.version, makeDefault]);
-    });
-    return definition;
   }
 }

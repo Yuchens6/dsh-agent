@@ -12,6 +12,7 @@ const env = z.object({
   RUN_CONTROL_URL: z.url(), API_RUN_CONTROL_SECRET: z.string().min(32),
   QUOTA_URL: z.url(), API_QUOTA_SECRET: z.string().min(32), AUDIT_URL: z.url(), API_AUDIT_SECRET: z.string().min(32),
   PORT: z.coerce.number().int().default(8080),
+  HOST: z.enum(["127.0.0.1", "0.0.0.0"]).default("0.0.0.0"),
   API_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(10000).default(128),
 }).parse(process.env);
 const app = createApiApp({
@@ -24,6 +25,6 @@ const app = createApiApp({
   quota: serviceClient(env.QUOTA_URL, env.API_QUOTA_SECRET, "dsh-agent-quota"),
   audit: serviceClient(env.AUDIT_URL, env.API_AUDIT_SECRET, "dsh-agent-audit"),
 });
-await app.listen({ host: "0.0.0.0", port: env.PORT, backlog: 1024 });
+await app.listen({ host: env.HOST, port: env.PORT, backlog: 1024 });
 process.once("SIGTERM", () => void app.close());
 process.once("SIGINT", () => void app.close());

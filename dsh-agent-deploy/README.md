@@ -1,5 +1,21 @@
 # dsh-agent-deploy：部署工程
 
+## Windows 原生部署（不使用容器）
+
+本机已完成原生部署，入口为 `native/platform.ps1`，详细地址、账号位置、命令、知识配置与实测记录见 [原生部署手册](../docs/native-deployment.zh-CN.md)。日常执行 `-Action Start`、`Stop`、`Status`；`Test` 会调用真实模型。当前原生配置显式启动执行器与 PostgreSQL 无向量知识服务；下文容器组合的默认开关和历史阶段状态不代表原生运行状态。
+
+```powershell
+.\dsh-agent-deploy\native\platform.ps1 -Action Status
+node dsh-agent-deploy/native/client.mjs ask "你好"
+```
+
+知识检索为可选接入，见 [LightRAG 部署手册](../docs/lightrag-integration.zh-CN.md)。默认组合不启动知识服务；
+`knowledge/compose.yaml` 是显式选用的附加文件，上游 LightRAG 与向量服务需独立准备，没有自动启用模型或导入用户文件。
+
+最新实时反馈版本需要 Run Control（运行控制服务）第 **7** 版迁移，集群任务为
+`dsh-agent-run-control-migrate-v7`。下文阶段版本号保留历史记录；当前升级顺序和兼容约定见
+[实时反馈说明](../docs/realtime-feedback.zh-CN.md)。本轮未修改本机密钥、启用执行器或部署容器。
+
 ## 本地环境
 
 在工作区根目录运行：
@@ -161,7 +177,7 @@ kubectl apply -f dsh-agent-deploy/k8s/run-control-migrate.yaml
 kubectl apply -f dsh-agent-deploy/k8s/support-migrate.yaml
 kubectl -n agent-platform wait --for=condition=complete job/dsh-agent-chat-migrate-v5 --timeout=120s
 kubectl -n agent-platform wait --for=condition=complete job/dsh-agent-workspace-migrate-v2 job/dsh-agent-catalog-migrate-v1 --timeout=120s
-kubectl -n agent-platform wait --for=condition=complete job/dsh-agent-run-control-migrate-v6 --timeout=120s
+kubectl -n agent-platform wait --for=condition=complete job/dsh-agent-run-control-migrate-v7 --timeout=120s
 kubectl -n agent-platform wait --for=condition=complete job/dsh-agent-quota-migrate-v3 job/dsh-agent-audit-migrate-v2 --timeout=120s
 # 此处先用 Catalog 管理连接串执行受控定义发布，详见其 README（项目说明）。
 kubectl apply -k dsh-agent-deploy/k8s

@@ -1,0 +1,19 @@
+{
+  "id": "company-handbook", "version": 1,
+  "documents": [
+    { "id": "architecture", "title": "平台数据库", "content": "平台使用 PostgreSQL 数据库。知识服务保存已审核的文档、结构化记录、实体和关系。无向量模式不需要向量模型。" },
+    { "id": "quota", "title": "员工积分", "content": "示例公司给五名员工各分配二十积分。员工仅使用自己的账户，不共享随机扣费的总余额。" }
+  ],
+  "records": [
+    { "id": "engineering-quota", "title": "研发部门示例配额", "attributes": { "department": "engineering", "points": 20, "active": true } }
+  ],
+  "entities": [
+    { "id": "platform", "name": "DSH平台", "type": "SYSTEM", "description": "智能体平台", "aliases": ["平台", "agent-platform"] },
+    { "id": "postgres", "name": "PostgreSQL", "type": "DATABASE", "description": "关系型数据库", "aliases": ["数据库"] },
+    { "id": "knowledge", "name": "知识服务", "type": "SERVICE", "description": "提供已授权的知识检索", "aliases": [] }
+  ],
+  "relationships": [
+    { "id": "platform-database", "source": "platform", "target": "postgres", "relation": "使用", "description": "保存平台数据" },
+    { "id": "knowledge-database", "source": "knowledge", "target": "postgres", "relation": "检索", "description": "通过全文索引、结构化字段和关系查询获得证据" }
+  ]
+}

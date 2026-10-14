@@ -1,8 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { CatalogRepository } from "../dsh-agent-catalog/src/repository.js";
 import { alice, otherTenant } from "./helpers.js";
 import { serviceDatabase, definition } from "./workspace-catalog-helpers.js";
+import { AgentDefinition, AgentToolCall } from "@dsh-agent/contracts";
+
+test("技能定义：兼容旧技能、原生名字与独立调用策略、拒绝重复及资源注入", async t => {
+  const { pg, db } = await serviceDatabase("catalog"); t.after(() => pg.close());
+  const repo = new CatalogRepository(db);
+  const old = { id: "brief", version: 1, instructions: "Be concise" };
+  const example = AgentDefinition.parse(JSON.parse(await readFile(new URL("../dsh-agent-catalog/definitions/native-skills-agent.v1.json", import.meta.url), "utf8")));
+  await repo.publish(example, alice.tenantId, false);
+  assert.deepEqual((await repo.get(alice, example.id, example.version)).skills, example.skills);
+  const preset = AgentDefinition.parse({ ...definition, skills: [old] });
+  await repo.publish(preset, alice.tenantId, false);
+  assert.deepEqual((await repo.get(alice, preset.id, preset.version)).skills, [old]);
+  const alias = { ...old, id: "Legacy_ID", name: "brief", description: "Concise responses", invocation: { modelInvocable: false, userInvocable: true } };
+  assert.equal(AgentDefinition.safeParse({ ...definition, skills: [alias] }).success, true);
+  for (const skills of [[old, old], [old, { ...old, version: 2 }], [old, alias], [{ ...old, id: "UPPER_CASE" }],
+    [{ ...old, name: "../secret" }], [{ ...old, invocation: { modelInvocable: true } }], [{ ...old, resourceBase: { kind: "directory", path: "C:/" } }]]) {
+    assert.equal(AgentDefinition.safeParse({ ...definition, skills }).success, false);
+  }
+  await assert.rejects(repo.publish({ ...preset, skills: [{ ...old, instructions: "changed" }] }, alice.tenantId, false), /VERSION_CONFLICT/);
+  await assert.rejects(repo.get(otherTenant, preset.id, preset.version), /NOT_FOUND/);
+  assert.equal(AgentToolCall.safeParse({ tool: "skill", arguments: { name: "brief" } }).success, false, "原生进度类型不能变成远程能力授权");
+});
 
 test("Catalog: 明确租户授权、不可变版本、默认版本切换且旧版可查", async t => {
   const { pg, db } = await serviceDatabase("catalog"); t.after(() => pg.close());

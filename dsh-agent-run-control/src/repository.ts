@@ -3,8 +3,9 @@ import { v7 as uuid } from "uuid";
 import { RunRequest, FinishRun, ExecutionInput, WorkspaceAuthorizationRequest, type WorkspaceAuthorization, type WorkspaceRunReference, type WorkspaceCapability, type AssistantResult, type Run, type Principal, type RunLease, type ClaimedRun, type ErrorCode, type PublicEvent } from "@dsh-agent/contracts";
 import type { Database, Sql } from "./database.js";
 import { RunAuditRecord as AuditRecord, QuotaClose, ModelCallReport, ModelUsageEvent } from "@dsh-agent/contracts";
-import { activeStep, nextStep, progress } from "./workflow.js";
-import { WorkflowStepResult } from "@dsh-agent/contracts";
+import { activeStep, observeStep, progress } from "./workflow.js";
+import { KnowledgeAuthorizationRequest, type KnowledgeAuthorization } from "@dsh-agent/contracts";
+import { WorkerProgress } from "@dsh-agent/contracts";
 
 export class RunError extends Error {
   constructor(public status: number, public code: ErrorCode) { super(code); }
@@ -38,7 +39,10 @@ export class RunRepository {
       await tx.query("INSERT INTO run_control.inbox(event_id,run_id) VALUES($1,$2) ON CONFLICT(event_id) DO NOTHING", [request.eventId, row.id]);
       const inbox = await tx.query("SELECT run_id FROM run_control.inbox WHERE event_id=$1", [request.eventId]);
       if (inbox.rows[0]!.run_id !== row.id) throw new RunError(409, "IDEMPOTENCY_CONFLICT");
-      if (inserted.rows.length) await this.audit(tx, row, "run.accepted");
+      if (inserted.rows.length) {
+        await this.audit(tx, row, "run.accepted");
+        await this.event(tx, row, "run.status.v1", undefined, { phase: "queued" });
+      }
       return view(row);
     });
   }
@@ -56,32 +60,6 @@ export class RunRepository {
   async get(actor: Principal, id: string) { return view(await this.own(this.db, actor, id)); }
   async workflowProgress(actor: Principal, id: string) {
     return this.db.transaction(async tx => progress(tx, await this.own(tx, actor, id)));
-  }
-  async workflowNext(workerId: string, id: string, lease: RunLease) {
-    return this.db.transaction(async tx => {
-      const row = await this.leased(tx, workerId, id, lease);
-      if (row.state !== "running" || row.lease_valid !== true) throw new RunError(409, "LEASE_LOST");
-      if (!row.execution_input || !ExecutionInput.parse(row.execution_input).definition.workflow) throw new RunError(409, "INVALID_STATE");
-      return nextStep(tx, row);
-    });
-  }
-  async workflowResult(workerId: string, id: string, value: unknown) {
-    const data = WorkflowStepResult.parse(value);
-    if (!data.output.isWellFormed() || data.output.includes("\0")) throw new RunError(400, "INVALID_REQUEST");
-    return this.db.transaction(async tx => {
-      const row = await this.leased(tx, workerId, id, data.lease);
-      const step = (await tx.query("SELECT * FROM run_control.workflow_steps WHERE run_id=$1 AND attempt=$2 AND step_id=$3", [id,row.attempt,data.stepId])).rows[0];
-      if (step?.state === "succeeded") {
-        if (step.output !== data.output) throw new RunError(409, "IDEMPOTENCY_CONFLICT");
-        return { recorded: true as const };
-      }
-      if (row.state !== "running" || row.lease_valid !== true) throw new RunError(409, "LEASE_LOST");
-      if (step?.state !== "running") throw new RunError(409, "INVALID_STATE");
-      const calls = (await tx.query("SELECT count(*) AS total,count(*) FILTER(WHERE final_report IS NULL) AS pending FROM run_control.model_calls WHERE run_id=$1 AND attempt=$2 AND step_id=$3", [id,row.attempt,data.stepId])).rows[0]!;
-      if (!Number(calls.total) || Number(calls.pending)) throw new RunError(409, "INVALID_STATE");
-      await tx.query("UPDATE run_control.workflow_steps SET state='succeeded',output=$4,completed_at=clock_timestamp() WHERE run_id=$1 AND attempt=$2 AND step_id=$3", [id,row.attempt,data.stepId,data.output]);
-      return { recorded: true as const };
-    });
   }
   async list(actor: Principal, query: { limit: number; after?: string; sessionId?: string }) {
     const result = await this.db.query("SELECT * FROM run_control.runs WHERE tenant_id=$1 AND owner_uid=$2 " +
@@ -117,6 +95,7 @@ export class RunRepository {
         [candidate.rows[0].id, workerId, randomUUID(), this.config.leaseSeconds, this.config.timeoutSeconds]);
       const row = result.rows[0]!;
       await this.audit(tx, row, "run.started");
+      await this.event(tx, row, "run.status.v1", undefined, { phase: "preparing" });
       return { run: view(row), actor: { uid: String(row.owner_uid), tenantId: String(row.tenant_id), roles: [] },
         lease: { leaseId: String(row.lease_id), attempt: Number(row.attempt) },
         leaseExpiresAt: iso(row.lease_expires_at), deadlineAt: iso(row.deadline_at) };
@@ -159,7 +138,7 @@ export class RunRepository {
       input.definition.id !== input.context.binding.agentDefinitionId || input.definition.version !== input.context.binding.agentDefinitionVersion ||
       input.context.messages.some(m => m.sessionId !== initial.session_id) ||
       input.context.messages.at(-1)!.id !== initial.message_id || input.context.messages.at(-1)!.role !== "user" ||
-      input.context.messages.reduce((sum, m) => sum + m.content.length, 0) > 64_000) throw new RunError(503, "DEPENDENCY_UNAVAILABLE");
+      input.context.truncated) throw new RunError(503, "DEPENDENCY_UNAVAILABLE");
     // 预留发生在模型输入交付之前；确认丢失可用同一运行标识幂等重传。
     await reserve?.(actor, input, iso(initial.deadline_at));
     return this.db.transaction(async tx => {
@@ -170,7 +149,61 @@ export class RunRepository {
       return input;
     });
   }
-  private async event(tx: Sql, row: Record<string, unknown>, eventType: PublicEvent["eventType"], text?: string) {
+  async reportProgress(workerId: string, id: string, value: unknown) {
+    const data = WorkerProgress.parse(value), digest = hash(data);
+    return this.db.transaction(async tx => {
+      const row = await this.leased(tx, workerId, id, data.lease);
+      // 即使重放也必须仍有有效执行权限，取消后不再接收进度。
+      if (row.state !== "running" || row.lease_valid !== true) throw new RunError(409, "LEASE_LOST");
+      const previous = (await tx.query("SELECT request_hash FROM run_control.progress_receipts WHERE run_id=$1 AND attempt=$2 AND sequence=$3",
+        [id, data.lease.attempt, data.sequence])).rows[0];
+      if (previous) {
+        if (previous.request_hash !== digest) throw new RunError(409, "IDEMPOTENCY_CONFLICT");
+        return { recorded: true as const };
+      }
+      if (!row.execution_input || data.sequence !== Number(row.progress_sequence) + 1) throw new RunError(409, "INVALID_STATE");
+      const input = ExecutionInput.parse(row.execution_input), report = data.report;
+      const step = input.definition.workflow ? await activeStep(tx, row) : undefined;
+      if (input.definition.workflow && !step && report.kind !== "workflow") throw new RunError(409, "INVALID_STATE");
+      const meta = step ? { stepId: String(step.step_id) } : {};
+      const bytes = report.kind === "text" ? Buffer.byteLength(report.text) : 0;
+      if (Number(row.progress_bytes) + bytes > 1024 * 1024) throw new RunError(429, "QUOTA_EXCEEDED");
+      if (report.kind === "workflow") {
+        await observeStep(tx, row, report);
+        await this.event(tx, row, "run.status.v1", undefined, { phase: "workflow", stepId: report.stepId, stepState: report.state });
+      } else if (report.kind === "text") {
+        const call = (await tx.query("SELECT final_report,step_id FROM run_control.model_calls WHERE run_id=$1 AND attempt=$2 AND call=$3",
+          [id, data.lease.attempt, report.call])).rows[0];
+        if (!call || call.final_report || (call.step_id ?? null) !== (step?.step_id ?? null)) throw new RunError(409, "INVALID_STATE");
+        await this.event(tx, row, "run.output.preview.v1", undefined, { ...meta, sequence: data.sequence, call: report.call, text: report.text });
+      } else if (report.kind === "retry") {
+        const call = (await tx.query("SELECT final_report,step_id FROM run_control.model_calls WHERE run_id=$1 AND attempt=$2 AND call=$3",
+          [id, data.lease.attempt, report.call])).rows[0];
+        const latest = (await tx.query("SELECT max(call) AS call FROM run_control.model_calls WHERE run_id=$1 AND attempt=$2",
+          [id, data.lease.attempt])).rows[0];
+        if (!call?.final_report || Number(latest?.call) !== report.call || report.call >= input.definition.execution.maxTurns ||
+          (call.step_id ?? null) !== (step?.step_id ?? null)) throw new RunError(409, "INVALID_STATE");
+        if (step) {
+          const used = (await tx.query("SELECT count(*) AS count FROM run_control.model_calls WHERE run_id=$1 AND attempt=$2 AND step_id=$3",
+            [id, data.lease.attempt, step.step_id])).rows[0]!;
+          if (Number(used.count) >= input.definition.workflow!.steps.find(s => s.id === step.step_id)!.maxTurns) throw new RunError(409, "INVALID_STATE");
+        }
+        await this.event(tx, row, "run.status.v1", undefined, { ...meta, phase: "retrying_model", call: report.call,
+          retry: report.retry, maxRetries: report.maxRetries, delayMs: report.delayMs });
+      } else {
+        const allowed = step ? input.definition.workflow!.steps.find(s => s.id === step.step_id)!.tools : input.definition.tools;
+          if (report.tool === "skill" ? !input.definition.skills.length : !allowed.includes(report.tool)) {
+            throw new RunError(403, "FORBIDDEN");
+          }
+        await this.event(tx, row, "run.status.v1", undefined, { ...meta, phase: "tool", tool: report.tool });
+      }
+      await tx.query("INSERT INTO run_control.progress_receipts(run_id,attempt,sequence,request_hash) VALUES($1,$2,$3,$4)",
+        [id, data.lease.attempt, data.sequence, digest]);
+      await tx.query("UPDATE run_control.runs SET progress_sequence=$2,progress_bytes=progress_bytes+$3 WHERE id=$1", [id, data.sequence, bytes]);
+      return { recorded: true as const };
+    });
+  }
+  private async event(tx: Sql, row: Record<string, unknown>, eventType: PublicEvent["eventType"], text?: string, extra?: Record<string, unknown>) {
     if (eventType === "run.completed.v1" || eventType === "run.failed.v1" || eventType === "run.canceled.v1") {
       await this.audit(tx, row, eventType.slice(0, -3) as AuditRecord["action"]);
       const calls = (await tx.query("SELECT count(*)::integer AS count FROM run_control.model_calls WHERE run_id=$1", [row.id])).rows[0]!;
@@ -181,7 +214,8 @@ export class RunRepository {
     }
     const envelope = { eventId: uuid(), occurredAt: new Date().toISOString(), producer: "dsh-agent-run-control",
       tenantId: row.tenant_id, ownerUid: row.owner_uid, sessionId: row.session_id, subjectId: row.id, traceId: row.trace_id,
-      eventType, payload: text === undefined ? { runId: row.id } : { runId: row.id, text } };
+      eventType, payload: extra ? { runId: row.id, messageId: row.message_id, attempt: Number(row.attempt), ...extra }
+        : text === undefined ? { runId: row.id } : { runId: row.id, text } };
     await tx.query("INSERT INTO run_control.outbox(event_id,run_id,subject,envelope) VALUES($1,$2,$3,$4)",
       [envelope.eventId, row.id, "agent.events." + row.tenant_id + "." + row.owner_uid + "." + row.session_id, JSON.stringify(envelope)]);
   }
@@ -192,7 +226,7 @@ export class RunRepository {
       if (row.state !== "running" || row.lease_valid !== true) throw new RunError(409, "LEASE_LOST");
       if (!row.execution_input) throw new RunError(409, "INVALID_STATE");
       const input = ExecutionInput.parse(row.execution_input);
-      if (!input.definition.tools.length) throw new RunError(403, "FORBIDDEN");
+      if (!input.definition.tools.some(tool => tool.startsWith("workspace."))) throw new RunError(403, "FORBIDDEN");
       const expiresAt = Math.floor(Math.min(new Date(row.lease_expires_at as string).getTime(), new Date(row.deadline_at as string).getTime()) / 1000);
       return sign({ runId: id, workerId, ...lease }, expiresAt);
     });
@@ -209,6 +243,35 @@ export class RunRepository {
         const active = await activeStep(tx, row);
         const node = snapshot.definition.workflow.steps.find(s => s.id === active?.step_id);
         if (!node?.tools.includes(request.tool)) throw new RunError(403, "FORBIDDEN");
+      }
+      return { ...request, actor: { tenantId: String(row.tenant_id), uid: String(row.owner_uid), roles: [] },
+        workspaceId: snapshot.context.binding.workspaceId,
+        leaseExpiresAt: iso(Math.min(new Date(row.lease_expires_at as string).getTime(), new Date(row.deadline_at as string).getTime())) };
+    });
+  }
+  async knowledgeCapability(workerId: string, id: string, lease: RunLease,
+    sign: (reference: WorkspaceRunReference, expiresAt: number) => Promise<WorkspaceCapability>) {
+    return this.db.transaction(async tx => {
+      const row = await this.leased(tx, workerId, id, lease);
+      if (row.state !== "running" || row.lease_valid !== true) throw new RunError(409, "LEASE_LOST");
+      if (!row.execution_input) throw new RunError(409, "INVALID_STATE");
+      const snapshot = ExecutionInput.parse(row.execution_input);
+      if (!snapshot.definition.tools.includes("knowledge.search")) throw new RunError(403, "FORBIDDEN");
+      const expiresAt = Math.floor(Math.min(new Date(row.lease_expires_at as string).getTime(), new Date(row.deadline_at as string).getTime()) / 1000);
+      return sign({ runId: id, workerId, ...lease }, expiresAt);
+    });
+  }
+  async authorizeKnowledge(input: unknown): Promise<KnowledgeAuthorization> {
+    const request = KnowledgeAuthorizationRequest.parse(input);
+    return this.db.transaction(async tx => {
+      const row = await this.leased(tx, request.workerId, request.runId, request);
+      if (row.state !== "running" || row.lease_valid !== true) throw new RunError(409, "LEASE_LOST");
+      if (!row.execution_input) throw new RunError(409, "INVALID_STATE");
+      const snapshot = ExecutionInput.parse(row.execution_input);
+      if (!snapshot.definition.tools.includes(request.tool) || !snapshot.definition.knowledgeSources?.includes(request.sourceId)) throw new RunError(403, "FORBIDDEN");
+      if (snapshot.definition.workflow) {
+        const active = await activeStep(tx, row);
+        if (!snapshot.definition.workflow.steps.find(s => s.id === active?.step_id)?.tools.includes(request.tool)) throw new RunError(403, "FORBIDDEN");
       }
       return { ...request, actor: { tenantId: String(row.tenant_id), uid: String(row.owner_uid), roles: [] },
         workspaceId: snapshot.context.binding.workspaceId,
@@ -234,6 +297,9 @@ export class RunRepository {
         data.state === "failed" ? data.failureCode : null, resultHash]);
       if (data.state === "succeeded") {
         await tx.query("INSERT INTO run_control.result_projections(run_id) VALUES($1)", [id]);
+        // JSON 转义可能把 32000 个控制字符放大到 192 KiB；超大快照通过既有授权查询获取。
+        await this.event(tx, row, "run.output.snapshot.v1", undefined,
+          { text: Buffer.byteLength(JSON.stringify(data.output)) <= 100_000 ? data.output : null });
         // 当前协议回传完整结果；拆成小事件是为满足代理大小约束，不冒充模型实时流。
         const points = Array.from(data.output);
         for (let offset = 0; offset < points.length; offset += 4000) {
@@ -281,13 +347,14 @@ export class RunRepository {
       const found = await tx.query("SELECT r.id FROM run_control.runs r WHERE EXISTS " +
         "(SELECT 1 FROM run_control.outbox o WHERE o.run_id=r.id AND o.published_at IS NULL) " +
         "AND NOT EXISTS (SELECT 1 FROM run_control.result_projections p WHERE p.run_id=r.id AND p.projected_at IS NULL) " +
-        "ORDER BY r.enqueue_sequence FOR UPDATE OF r SKIP LOCKED LIMIT 1");
+        "ORDER BY r.event_dispatch_at NULLS FIRST,r.enqueue_sequence FOR UPDATE OF r SKIP LOCKED LIMIT 1");
       if (!found.rows[0]) return 0;
       const result = await tx.query("SELECT * FROM run_control.outbox WHERE run_id=$1 AND published_at IS NULL ORDER BY sequence LIMIT 50", [found.rows[0].id]);
       for (const row of result.rows) {
         await publish(String(row.subject), row.envelope as PublicEvent);
         await tx.query("UPDATE run_control.outbox SET published_at=now() WHERE event_id=$1", [row.event_id]);
       }
+      await tx.query("UPDATE run_control.runs SET event_dispatch_at=clock_timestamp() WHERE id=$1", [found.rows[0].id]);
       return result.rows.length;
     });
   }
@@ -347,6 +414,7 @@ export class RunRepository {
           if (!prior?.final_report) throw new RunError(409, "INVALID_STATE");
         }
         previous = (await tx.query("INSERT INTO run_control.model_calls(run_id,attempt,call,step_id) VALUES($1,$2,$3,$4) RETURNING *", [id, lease.attempt, report.call, stepId])).rows[0]!;
+        await this.event(tx, row, "run.status.v1", undefined, { phase: "waiting_model", call: report.call, ...(stepId ? { stepId } : {}) });
       } else {
         // 只补记已开始调用的计量，可在取消/超时后完成；绝不恢复租约或执行权限。
         if (!previous) throw new RunError(409, "INVALID_STATE");

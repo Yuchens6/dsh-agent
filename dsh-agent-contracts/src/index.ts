@@ -71,8 +71,11 @@ export const AuditProducer = z.enum(["dsh-agent-run-control", "dsh-agent-chat", 
 export type AuditProducer = z.infer<typeof AuditProducer>;
 export type AuditRecord = z.infer<typeof AuditRecord>;
 export const AuditPage = z.object({ items: z.array(AuditRecord), nextCursor: ResourceId.nullable() }).strict();
+export const DefinitionReference = z.object({ id: IdentityId, version: z.number().int().positive() }).strict();
+export type DefinitionReference = z.infer<typeof DefinitionReference>;
 export const CreateSession = z.object({
   title: z.string().trim().min(1).max(200),
+  definition: DefinitionReference.optional(),
 }).strict();
 export const UpdateSession = z.object({ expectedRevision: z.number().int().positive(), title: z.string().trim().min(1).max(200).optional(), archived: z.boolean().optional() }).strict()
   .refine(value => value.title !== undefined || value.archived !== undefined, "At least one change required");
@@ -134,8 +137,28 @@ const eventBase = {
   subjectId: ResourceId,
   traceId: z.string(),
 };
+export const AgentTool = z.enum(["workspace.list", "workspace.read", "workspace.write", "knowledge.search"]);
+// 原生内存技能加载器仅用于进度展示，不授予远程工具调用权限。
+export const RuntimeTool = z.union([AgentTool, z.literal("skill")]);
 // 公共事件使用白名单字段；上游额外字段（工具参数、内部路径、密钥等）会被剔除。
 export const PublicEvent = z.discriminatedUnion("eventType", [
+  z.object({ ...eventBase, eventType: z.literal("run.status.v1"), payload: z.object({
+    runId: ResourceId, messageId: ResourceId, attempt: z.number().int().nonnegative(),
+    phase: z.enum(["queued", "preparing", "waiting_model", "retrying_model", "tool", "workflow"]),
+    stepState: z.enum(["running", "skipped", "succeeded"]).optional(),
+    call: z.number().int().positive().optional(), stepId: z.string().optional(),
+    tool: RuntimeTool.optional(),
+    retry: z.number().int().min(1).max(5).optional(), maxRetries: z.number().int().min(1).max(5).optional(),
+    delayMs: z.number().int().min(0).max(10_000).optional(),
+  }) }),
+  z.object({ ...eventBase, eventType: z.literal("run.output.preview.v1"), payload: z.object({
+    runId: ResourceId, messageId: ResourceId, attempt: z.number().int().positive(),
+    sequence: z.number().int().positive(), call: z.number().int().positive(),
+    stepId: z.string().optional(), text: z.string().max(4096),
+  }) }),
+  z.object({ ...eventBase, eventType: z.literal("run.output.snapshot.v1"), payload: z.object({
+    runId: ResourceId, messageId: ResourceId, attempt: z.number().int().positive(), text: z.string().max(32_000).nullable(),
+  }) }),
   z.object({ ...eventBase, eventType: z.literal("conversation.created.v1"),
     payload: z.object({ sessionId: ResourceId }) }),
   z.object({ ...eventBase, eventType: z.literal("conversation.message.accepted.v1"),
@@ -175,23 +198,38 @@ export const FileListQuery = z.object({
 export const FilePage = z.object({ items: z.array(FileMetadata), nextCursor: WorkspacePath.nullable() }).strict();
 export const WorkspaceTool = z.enum(["workspace.list", "workspace.read", "workspace.write"]);
 export const WorkflowStep = z.object({ id: IdentityId, instructions: z.string().min(1).max(4000),
-  maxTurns: z.number().int().min(1).max(50), tools: z.array(WorkspaceTool).max(3),
+  maxTurns: z.number().int().min(1).max(50), tools: z.array(AgentTool).max(4),
   whenPreviousContains: z.string().min(1).max(200).optional() }).strict();
 export const WorkflowDefinition = z.object({ steps: z.array(WorkflowStep).min(1).max(8) }).strict();
+const SkillName = z.string().min(1).max(128).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+export const ApprovedSkill = z.object({
+  id: IdentityId, version: z.number().int().positive(),
+  name: SkillName.optional(), description: z.string().min(1).max(1000).optional(),
+  instructions: z.string().min(1).max(8000),
+  invocation: z.object({ modelInvocable: z.boolean(), userInvocable: z.boolean() }).strict().optional(),
+}).strict().refine(skill => SkillName.safeParse(skill.name ?? skill.id).success,
+  "Skill requires a native kebab-case name (or id)");
 export const AgentDefinition = z.object({
   id: IdentityId, version: z.number().int().positive(), name: z.string().min(1).max(100),
   description: z.string().max(1000), systemPrompt: z.string().min(1).max(16_000),
   model: z.object({ provider: z.literal("deepseek-official"), name: IdentityId }).strict(),
-  tools: z.array(WorkspaceTool).max(3),
-  skills: z.array(z.object({
-    id: IdentityId, version: z.number().int().positive(), instructions: z.string().min(1).max(8000),
-  }).strict()).max(10),
+  tools: z.array(AgentTool).max(4),
+  knowledgeSources: z.array(IdentityId).min(1).max(16).optional(),
+  skills: z.array(ApprovedSkill).max(10),
   execution: z.object({
     maxTurns: z.number().int().min(1).max(50), maxOutputTokens: z.number().int().min(1).max(32_768),
     timeoutSeconds: z.number().int().min(1).max(120),
   }).strict(),
   workflow: WorkflowDefinition.optional(),
 }).strict().superRefine((value, ctx) => {
+  if (new Set(value.skills.map(s => s.id)).size !== value.skills.length ||
+    new Set(value.skills.map(s => s.name ?? s.id)).size !== value.skills.length) {
+    ctx.addIssue({ code: "custom", message: "Skill IDs and native names must be unique", path: ["skills"] });
+  }
+  if (value.tools.includes("knowledge.search") && !value.knowledgeSources?.length ||
+    value.knowledgeSources && new Set(value.knowledgeSources).size !== value.knowledgeSources.length) {
+    ctx.addIssue({ code: "custom", message: "Knowledge tools require unique approved source IDs", path: ["knowledgeSources"] });
+  }
   if (!value.workflow) return;
   const steps = value.workflow.steps;
   if (new Set(steps.map(s => s.id)).size !== steps.length || steps[0]?.whenPreviousContains !== undefined ||
@@ -204,8 +242,20 @@ export const AgentDefinition = z.object({
 export type AgentDefinition = z.infer<typeof AgentDefinition>;
 export const DefinitionSummary = z.object({ id: AgentDefinition.shape.id, version: AgentDefinition.shape.version,
   name: AgentDefinition.shape.name, description: AgentDefinition.shape.description, tools: AgentDefinition.shape.tools,
-  isDefault: z.boolean() });
+  isDefault: z.boolean(), kind: z.enum(["agent", "workflow"]).default("agent") });
 export const DefinitionPage = z.object({ items: z.array(DefinitionSummary) }).strict();
+// Studio only accepts text/configuration. Provider, sources and execution budget are inherited from an authorized platform template.
+export const StudioPublish = z.object({
+  slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(48),
+  expectedVersion: z.number().int().min(0), base: DefinitionReference,
+  name: z.string().trim().min(1).max(100), description: z.string().max(1000),
+  systemPrompt: z.string().min(1).max(16_000), tools: z.array(AgentTool).max(4),
+  skills: z.array(ApprovedSkill).max(10), workflow: WorkflowDefinition.optional(),
+}).strict();
+export type StudioPublish = z.infer<typeof StudioPublish>;
+export const StudioAgent = z.object({ id: IdentityId, slug: z.string(), version: z.number().int().positive(),
+  base: DefinitionReference, updatedBy: IdentityId, updatedAt: z.iso.datetime() }).strict();
+export const StudioState = z.object({ enabled: z.boolean(), canPublish: z.boolean(), items: z.array(StudioAgent) }).strict();
 export const SessionBinding = z.object({
   workspaceId: ResourceId, agentDefinitionId: IdentityId, agentDefinitionVersion: z.number().int().positive(),
 }).strict();
@@ -231,6 +281,21 @@ export type RunRequest = z.infer<typeof RunRequest>;
 export const RunLease = z.object({ leaseId: ResourceId, attempt: z.number().int().positive() }).strict();
 export type RunLease = z.infer<typeof RunLease>;
 export const WorkerUsageReport = z.object({ lease: RunLease, report: ModelCallReport }).strict();
+export type WorkflowStep = z.infer<typeof WorkflowStep>;
+export const RunProgress = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("workflow"), stepId: IdentityId, state: z.enum(["running", "skipped", "succeeded"]),
+    output: z.string().min(1).max(32_000).refine(value => value.isWellFormed() && !value.includes("\0")).optional() }).strict()
+    .refine(value => (value.state === "succeeded") === (value.output !== undefined), "Only completed steps supply output"),
+  z.object({ kind: z.literal("text"), call: z.number().int().min(1).max(50), text: z.string().min(1).max(4096)
+    .refine(value => value.isWellFormed() && !value.includes("\0"), "Invalid preview text") }).strict(),
+  z.object({ kind: z.literal("tool"), tool: RuntimeTool }).strict(),
+  z.object({ kind: z.literal("retry"), call: z.number().int().min(1).max(50),
+    retry: z.number().int().min(1).max(5), maxRetries: z.number().int().min(1).max(5),
+    delayMs: z.number().int().min(0).max(10_000) }).strict()
+    .refine(value => value.retry <= value.maxRetries, "Retry exceeds limit"),
+]);
+export type RunProgress = z.infer<typeof RunProgress>;
+export const WorkerProgress = z.object({ lease: RunLease, sequence: z.number().int().min(1).max(4096), report: RunProgress }).strict();
 export const UsageRecorded = z.object({ recorded: z.literal(true) }).strict();
 export const ClaimedRun = z.object({
   run: Run, actor: Principal, lease: RunLease, leaseExpiresAt: z.string(), deadlineAt: z.string(),
@@ -244,9 +309,14 @@ export const FinishRun = z.discriminatedUnion("state", [
 export type FinishRun = z.infer<typeof FinishRun>;
 
 // 执行输入仅通过持有有效租约的工作进程接口下发，不属于前端查询协议。
+// 传输/内存保护，不是模型窗口；超限失败而不是丢弃历史。
+export const EXECUTION_HISTORY_MAX_BYTES = 8 * 1024 * 1024;
+export const EXECUTION_INPUT_MAX_BYTES = 16 * 1024 * 1024;
 export const ExecutionContext = z.object({
   sessionId: ResourceId, messageId: ResourceId, binding: SessionBinding,
-  messages: z.array(Message.extend({ content: z.string().min(1).max(32_000) })).min(1).max(40),
+  messages: z.array(Message.extend({ content: z.string().min(1).max(32_000) })).min(1)
+    .refine(messages => new TextEncoder().encode(JSON.stringify(messages)).byteLength <= EXECUTION_HISTORY_MAX_BYTES, "Execution history transport limit exceeded"),
+  // 兼容已保存的旧快照；新 Chat 始终返回 false，运行器拒绝执行旧裁剪快照。
   truncated: z.boolean(),
 }).strict();
 export type ExecutionContext = z.infer<typeof ExecutionContext>;
@@ -254,12 +324,6 @@ export const ExecutionInput = z.object({
   runId: ResourceId, context: ExecutionContext, definition: AgentDefinition, capturedAt: z.iso.datetime(),
 }).strict();
 export type ExecutionInput = z.infer<typeof ExecutionInput>;
-export const WorkflowNext = z.discriminatedUnion("complete", [
-  z.object({ complete: z.literal(false), step: WorkflowStep, previousOutput: z.string().max(32_000).nullable() }).strict(),
-  z.object({ complete: z.literal(true), output: z.string().min(1).max(32_000) }).strict(),
-]);
-export type WorkflowNext = z.infer<typeof WorkflowNext>;
-export const WorkflowStepResult = z.object({ lease: RunLease, stepId: IdentityId, output: z.string().min(1).max(32_000) }).strict();
 export const WorkflowProgress = z.object({ runId: ResourceId, state: RunState, enabled: z.boolean(),
   steps: z.array(z.object({ id: IdentityId, state: z.enum(["pending", "running", "succeeded", "skipped", "interrupted"]),
     startedAt: z.iso.datetime().nullable(), completedAt: z.iso.datetime().nullable() }).strict()).max(8) }).strict();
@@ -294,3 +358,29 @@ export const WorkspaceToolResult = z.discriminatedUnion("tool", [
   z.object({ tool: z.literal("workspace.write"), result: FileMetadata }).strict(),
 ]);
 export type WorkspaceToolResult = z.infer<typeof WorkspaceToolResult>;
+
+// Read-only graph/vector retrieval. No model-supplied URL, credential, actor or database query.
+export const KnowledgeSearch = z.object({ sourceId: IdentityId,
+  query: z.string().trim().min(3).max(2000).refine(v => v.isWellFormed() && !v.includes("\0")),
+  keywords: z.array(z.string().trim().min(1).max(80)).min(1).max(8),
+  mode: z.enum(["mix", "hybrid", "local", "global"]).default("mix"),
+  limit: z.number().int().min(1).max(10).default(5),
+  filters: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/),
+    z.union([z.string().max(256).refine(value => value.isWellFormed() && !value.includes("\0")), z.number().finite(), z.boolean(), z.null()]))
+    .refine(value => Object.keys(value).length <= 8, "At most eight approved exact filters").optional(),
+}).strict();
+export type KnowledgeSearch = z.infer<typeof KnowledgeSearch>;
+export const KnowledgeToolCall = z.object({ tool: z.literal("knowledge.search"), arguments: KnowledgeSearch }).strict();
+export const KnowledgeResult = z.object({ sourceId: IdentityId, truncated: z.boolean(),
+  chunks: z.array(z.object({ citation: z.string().max(200), content: z.string().max(4000) }).strict()).max(10),
+  entities: z.array(z.object({ name: z.string().max(200), type: z.string().max(100), description: z.string().max(1000) }).strict()).max(10),
+  relationships: z.array(z.object({ source: z.string().max(200), target: z.string().max(200), description: z.string().max(1000) }).strict()).max(10),
+}).strict();
+export const KnowledgeToolResult = z.object({ tool: z.literal("knowledge.search"), result: KnowledgeResult }).strict();
+export const KnowledgeAuthorizationRequest = WorkspaceRunReference.extend({ tool: z.literal("knowledge.search"), sourceId: IdentityId }).strict();
+export const KnowledgeAuthorization = KnowledgeAuthorizationRequest.extend({ actor: Principal, workspaceId: ResourceId, leaseExpiresAt: z.iso.datetime() }).strict();
+export type KnowledgeAuthorization = z.infer<typeof KnowledgeAuthorization>;
+export const AgentToolCall = z.discriminatedUnion("tool", [...WorkspaceToolCall.options, KnowledgeToolCall]);
+export const AgentToolResult = z.discriminatedUnion("tool", [...WorkspaceToolResult.options, KnowledgeToolResult]);
+export type AgentToolCall = z.infer<typeof AgentToolCall>;
+export type AgentToolResult = z.infer<typeof AgentToolResult>;

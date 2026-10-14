@@ -1,0 +1,37 @@
+# Opt-in overlay. Configure an imported PostgreSQL corpus and reader, or external LightRAG.
+# Paths are resolved relative to the first Compose file (dsh-agent-deploy/compose.yaml).
+services:
+  run-control:
+    environment:
+      RUN_CONTROL_KNOWLEDGE_SECRET: ${RUN_CONTROL_KNOWLEDGE_SECRET:?Configure knowledge capability secret}
+      KNOWLEDGE_RUN_CONTROL_SECRET: ${KNOWLEDGE_RUN_CONTROL_SECRET:?Configure knowledge authorization secret}
+  runtime-dsh:
+    environment:
+      KNOWLEDGE_URL: http://knowledge:8090
+  knowledge:
+    profiles: [knowledge]
+    build:
+      context: ..
+      dockerfile: dsh-agent-deploy/Dockerfile
+      args: { SERVICE: dsh-agent-knowledge }
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 8090
+      RUN_CONTROL_URL: http://run-control:8080
+      KNOWLEDGE_SOURCES_FILE: /app/config/sources.json
+      RUN_CONTROL_KNOWLEDGE_SECRET: ${RUN_CONTROL_KNOWLEDGE_SECRET:?Required}
+      KNOWLEDGE_RUN_CONTROL_SECRET: ${KNOWLEDGE_RUN_CONTROL_SECRET:?Required}
+      LIGHTRAG_PERSONAL_API_KEY: ${LIGHTRAG_PERSONAL_API_KEY:-}
+      KNOWLEDGE_DATABASE_URL: ${KNOWLEDGE_DATABASE_URL:-}
+      KNOWLEDGE_DB_POOL_MAX: ${KNOWLEDGE_DB_POOL_MAX:-8}
+      KNOWLEDGE_DB_MAX_WAITING: ${KNOWLEDGE_DB_MAX_WAITING:-16}
+      KNOWLEDGE_MAX_IN_FLIGHT: ${KNOWLEDGE_MAX_IN_FLIGHT:-16}
+    volumes:
+      - ${KNOWLEDGE_SOURCES_FILE:?Set absolute sources file path}:/app/config/sources.json:ro
+    # Deliberately no host port or public route.
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8090/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

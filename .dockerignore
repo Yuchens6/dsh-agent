@@ -2,6 +2,7 @@ node_modules
 .env
 .git
 .tools
+.local
 deepseek-harness
 tests
 docs
@@ -15,4 +16,5 @@ dsh-agent-catalog/dist
 dsh-agent-run-control/dist
 dsh-agent-runtime-dsh/dist
 dsh-agent-quota/dist
+dsh-agent-knowledge/dist
 dsh-agent-audit/dist

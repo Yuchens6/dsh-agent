@@ -3,9 +3,10 @@ import { fileURLToPath } from "node:url";
 import { ChildMessage } from "./protocol.js";
 import type { Executor } from "./worker.js";
 import { RuntimeError } from "./client.js";
+import type { ModelRetry } from "./retry.js";
 
-export function processExecutor(config: { apiKey: string; baseUrl: string; maxToolCalls: number }): Executor {
-  return async (input, tool, signal, reportUsage = async () => {}) => {
+export function processExecutor(config: { apiKey: string; baseUrl: string; maxToolCalls: number; modelRetry?: ModelRetry }): Executor {
+  return async (input, tool, signal, reportUsage = async () => {}, reportProgress = async () => {}) => {
     signal.throwIfAborted();
     const env: Record<string, string> = {};
     for (const name of ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH", "LANG", "LC_ALL"]) {
@@ -18,6 +19,7 @@ export function processExecutor(config: { apiKey: string; baseUrl: string; maxTo
     return new Promise<string>((resolve, reject) => {
       let finished = false, output: string | undefined, failed = false, active = false, lastId = 0;
       let usageActive = false, lastUsageId = 0;
+      let progressActive = false, lastProgressId = 0, progressBytes = 0;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       const stop = () => {
         if (finished) return;
@@ -33,11 +35,22 @@ export function processExecutor(config: { apiKey: string; baseUrl: string; maxTo
         const message = parsed.data;
         if (message.kind === "failed") { fail(); return; }
         if (message.kind === "result") {
-          if (active || usageActive || output !== undefined) { fail(); return; }
+          if (active || usageActive || progressActive || output !== undefined) { fail(); return; }
           output = message.output; stop(); return;
         }
+        if (message.kind === "progress") {
+          if (progressActive || active || usageActive || message.id !== lastProgressId + 1) { fail(); return; }
+          progressBytes += message.report.kind === "text" ? Buffer.byteLength(message.report.text) : 0;
+          if (progressBytes > 1024 * 1024) { fail(); return; }
+          lastProgressId = message.id; progressActive = true;
+          void reportProgress(message.report).then(() => {
+            progressActive = false;
+            if (!finished && !failed && child.connected) child.send({ kind: "progress-ack", id: message.id }, error => { if (error) fail(); });
+          }, () => { progressActive = false; fail(); });
+          return;
+        }
         if (message.kind === "usage") {
-          if (usageActive || active || message.id !== lastUsageId + 1 || message.id > input.definition.execution.maxTurns * 2) { fail(); return; }
+          if (usageActive || active || progressActive || message.id !== lastUsageId + 1 || message.id > input.definition.execution.maxTurns * 2) { fail(); return; }
           lastUsageId = message.id; usageActive = true;
           void reportUsage(message.report).then(() => {
             usageActive = false;
@@ -45,7 +58,7 @@ export function processExecutor(config: { apiKey: string; baseUrl: string; maxTo
           }, () => { usageActive = false; fail(); });
           return;
         }
-        if (active || message.id !== lastId + 1 || message.id > config.maxToolCalls || !input.definition.tools.includes(message.call.tool)) { fail(); return; }
+        if (active || usageActive || progressActive || message.id !== lastId + 1 || message.id > config.maxToolCalls || !input.definition.tools.includes(message.call.tool)) { fail(); return; }
         lastId = message.id; active = true;
         void tool(message.call).then(result => {
           active = false;

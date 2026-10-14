@@ -5,7 +5,7 @@
   "resetPasswordAllowed": false,
   "bruteForceProtected": true,
   "accessTokenLifespan": 300,
-  "roles": { "realm": [{ "name": "user" }] },
+  "roles": { "realm": [{ "name": "user" }, { "name": "tenant-admin", "description": "Publish constrained definitions for the active tenant" }] },
   "clients": [{
     "clientId": "agent-web",
     "name": "DSH Agent local Web client",

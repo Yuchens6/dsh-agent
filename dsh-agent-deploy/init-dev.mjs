@@ -14,6 +14,7 @@ const defaults = {
   CHAT_PUBLISH_WORKERS: "2", CHAT_DB_POOL_MAX: "10", CHAT_DB_MAX_WAITING: "64",
   RUN_DELIVERY_WORKERS: "2", RUN_MAX_ACTIVE: "64", RUN_USER_ACTIVE: "2", RUN_TENANT_ACTIVE: "32", RUN_AGING_SECONDS: "60",
   RUN_DB_POOL_MAX: "10", RUN_DB_MAX_WAITING: "64", RUNTIME_CONCURRENCY: "1",
+  RUNTIME_MODEL_MAX_RETRIES: "2", RUNTIME_MODEL_RETRY_INITIAL_MS: "500", RUNTIME_MODEL_RETRY_MAX_MS: "10000",
   S3_ENDPOINT: "http://host.docker.internal:9000", S3_REGION: "us-east-1", S3_BUCKET: "dsh-workspaces",
   S3_ACCESS_KEY: "configure-your-storage-access-key", S3_SECRET_KEY: "configure-your-storage-secret-key",
 };

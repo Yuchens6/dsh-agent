@@ -1,0 +1,5 @@
+{
+  "name": "@dsh-agent/web", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.build.json", "start": "node dist/main.js", "dev": "tsx src/main.ts" },
+  "dependencies": { "fastify": "5.12.5" }
+}

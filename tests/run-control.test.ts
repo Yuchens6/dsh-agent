@@ -89,7 +89,8 @@ test("Run Control: 租约身份、尝试号、截止时间和完成幂等", asyn
   assert.equal(await repo.publishBatch(async () => { throw new Error(); }), 0);
   const projection = events as Array<{ eventType: string; payload: { text?: string } }>;
   assert.equal(projection.at(-1)!.eventType, "run.completed.v1");
-  assert.equal(projection.slice(0, -1).map(e => e.payload.text).join(""), body.output);
+  assert.equal(projection.filter(e => e.eventType === "run.output.delta.v1").map(e => e.payload.text).join(""), body.output);
+  assert.equal(projection.find(e => e.eventType === "run.output.snapshot.v1")?.payload.text, body.output);
   await assert.rejects(repo.cancel(alice, claim.run.id), /INVALID_STATE/);
 });
 
@@ -100,7 +101,7 @@ test("Run Control: 取消保留运行槽位直到停止确认，旧结果不能�
   const claim = (await repo.claim("worker-a"))!;
   await repo.cancel(alice, first.id);
   assert.equal((await repo.cancel(alice, first.id)).state, "canceled");
-  assert.equal((await db.query("SELECT * FROM run_control.outbox")).rows.length, 1);
+  assert.equal((await db.query("SELECT * FROM run_control.outbox WHERE envelope->>'eventType'='run.canceled.v1'")).rows.length, 1);
   assert.equal(await repo.claim("worker-b"), null);
   await assert.rejects(repo.heartbeat("worker-a", first.id, claim.lease), /LEASE_LOST/);
   await assert.rejects(repo.finish("worker-a", first.id, { ...claim.lease, state: "succeeded", output: "late" }), /LEASE_LOST/);

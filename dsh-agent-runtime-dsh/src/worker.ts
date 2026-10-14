@@ -1,9 +1,9 @@
 import { setTimeout as pause } from "node:timers/promises";
-import type { ClaimedRun, ExecutionInput, WorkspaceToolCall, WorkspaceToolResult, FinishRun } from "@dsh-agent/contracts";
+import type { ClaimedRun, ExecutionInput, AgentToolCall, AgentToolResult, FinishRun } from "@dsh-agent/contracts";
 import { RuntimeError, type RuntimeClient } from "./client.js";
 import type { UsageReporter } from "./usage.js";
-import { executeWorkflow } from "./workflow.js";
-export type Executor = (input: ExecutionInput, tool: (call: WorkspaceToolCall) => Promise<WorkspaceToolResult>, signal: AbortSignal, reportUsage?: UsageReporter) => Promise<string>;
+import type { ProgressReporter } from "./progress.js";
+export type Executor = (input: ExecutionInput, tool: (call: AgentToolCall) => Promise<AgentToolResult>, signal: AbortSignal, reportUsage?: UsageReporter, reportProgress?: ProgressReporter) => Promise<string>;
 
 export async function executeClaim(client: RuntimeClient, claim: ClaimedRun, execute: Executor, stopping: AbortSignal,
   config = { heartbeatMs: 5000, maxToolCalls: 100 }) {
@@ -52,9 +52,19 @@ export async function executeClaim(client: RuntimeClient, claim: ClaimedRun, exe
         }
       }
     };
-    const output = input.definition.workflow
-      ? await executeWorkflow(client, claim, input, execute, tool, signal, reportUsage)
-      : await execute(input, tool, signal, reportUsage);
+    let sequence = 0;
+    const reportProgress: ProgressReporter = async report => {
+      const current = ++sequence;
+      for (let attempt = 0; ; attempt++) {
+        checkLimits(); signal.throwIfAborted();
+        try { await client.progress(claim, current, report, signal); return; }
+        catch (error) {
+          if (attempt >= 2 || error instanceof RuntimeError && error.status >= 400 && error.status < 500) throw error;
+          await pause(100 * (attempt + 1), undefined, { signal });
+        }
+      }
+    };
+    const output = await execute(input, tool, signal, reportUsage, reportProgress);
     checkLimits();
     signal.throwIfAborted();
     if (!output || output.length > 32_000 || !output.isWellFormed() || output.includes("\0")) throw new Error("Invalid output");

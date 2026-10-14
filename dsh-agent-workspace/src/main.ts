@@ -9,6 +9,7 @@ import { auditClient } from "./audit.js";
 const env = z.object({
   DATABASE_URL: z.string().min(1), API_WORKSPACE_SECRET: z.string().min(32),
   CHAT_WORKSPACE_SECRET: z.string().min(32), PORT: z.coerce.number().int().default(8080),
+  HOST: z.enum(["127.0.0.1", "0.0.0.0"]).default("0.0.0.0"),
   RUN_CONTROL_WORKSPACE_SECRET: z.string().min(32), WORKSPACE_RUN_CONTROL_SECRET: z.string().min(32), RUN_CONTROL_URL: z.url(),
   AUDIT_URL: z.url(), WORKSPACE_AUDIT_SECRET: z.string().min(32), WORKSPACE_METRICS_SECRET: z.string().min(32),
 }).parse(process.env);
@@ -30,7 +31,7 @@ const app = createWorkspaceApp({
     await storage.ready();
   },
 });
-await app.listen({ host: "0.0.0.0", port: env.PORT });
+await app.listen({ host: env.HOST, port: env.PORT });
 let stopping = false;
 const deliverAudit = auditClient(env.AUDIT_URL, env.WORKSPACE_AUDIT_SECRET);
 const auditPublisher = (async () => {

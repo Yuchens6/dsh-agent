@@ -54,6 +54,7 @@ export function serviceClient(baseUrl: string, secret: string,
         }
         await response.body?.cancel();
         if (response.status === 404) throw new ApiError(404, "NOT_FOUND");
+        if (response.status === 403) throw new ApiError(403, "FORBIDDEN");
         if (response.status === 400) throw new ApiError(400, "INVALID_REQUEST");
         throw new ApiError(503, "DEPENDENCY_UNAVAILABLE");
       }

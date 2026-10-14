@@ -1,10 +1,10 @@
 import { SignJWT } from "jose";
 import { z } from "zod";
-import { AgentDefinition, Workspace, type Principal, type SessionBinding } from "@dsh-agent/contracts";
+import { AgentDefinition, Workspace, DefinitionReference, type Principal, type SessionBinding } from "@dsh-agent/contracts";
 import { ChatError } from "./repository.js";
 export function bindingResolver(config: {
   workspaceUrl: string; workspaceSecret: string; catalogUrl: string; catalogSecret: string;
-}): (actor: Principal) => Promise<SessionBinding> {
+}): (actor: Principal, definition?: DefinitionReference) => Promise<SessionBinding> {
   if (Buffer.byteLength(config.workspaceSecret) < 32 || Buffer.byteLength(config.catalogSecret) < 32 ||
     config.workspaceSecret === config.catalogSecret) throw new Error("Distinct service secrets required");
   async function call<T>(actor: Principal, url: string, secret: string, audience: string,
@@ -16,14 +16,20 @@ export function bindingResolver(config: {
       const response = await fetch(new URL("/internal/v1" + path, url), {
         method, headers: { authorization: "Bearer " + token }, redirect: "error", signal: AbortSignal.timeout(3000),
       });
-      if (!response.ok) { await response.body?.cancel(); throw new Error(); }
+      if (!response.ok) {
+        await response.body?.cancel();
+        if (response.status === 404 && path.startsWith("/definitions/") && path !== "/definitions/default") throw new ChatError(404, "NOT_FOUND");
+        throw new Error();
+      }
       return schema.parse(await response.json());
-    } catch { throw new ChatError(503, "DEPENDENCY_UNAVAILABLE"); }
+    } catch (error) { if (error instanceof ChatError) throw error; throw new ChatError(503, "DEPENDENCY_UNAVAILABLE"); }
   }
-  return async actor => {
+  return async (actor, selection) => {
+    const definitionRef = selection === undefined ? undefined : DefinitionReference.parse(selection);
     const [workspace, definition] = await Promise.all([
       call(actor, config.workspaceUrl, config.workspaceSecret, "dsh-agent-workspace", "POST", "/workspaces/ensure", Workspace),
-      call(actor, config.catalogUrl, config.catalogSecret, "dsh-agent-catalog", "GET", "/definitions/default", AgentDefinition),
+      call(actor, config.catalogUrl, config.catalogSecret, "dsh-agent-catalog", "GET", definitionRef ?
+        `/definitions/${definitionRef.id}/versions/${definitionRef.version}` : "/definitions/default", AgentDefinition),
     ]);
     return { workspaceId: workspace.id, agentDefinitionId: definition.id, agentDefinitionVersion: definition.version };
   };

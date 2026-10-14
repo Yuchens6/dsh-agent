@@ -1,0 +1,8 @@
+{
+  "sources": [
+    { "id": "personal-handbook", "backend": "postgres", "corpusId": "company-handbook", "ragMode": "fulltext", "readers": [{ "tenantId": "local-dev", "uid": "REPLACE_WITH_USER_SUB" }] },
+    { "id": "company-records", "backend": "postgres", "corpusId": "company-handbook", "ragMode": "structured", "filterFields": ["department", "points", "active"], "readers": [{ "tenantId": "local-dev", "uid": "REPLACE_WITH_USER_SUB" }] },
+    { "id": "company-graph", "backend": "postgres", "corpusId": "company-handbook", "ragMode": "graph", "graphDepth": 2, "readers": [{ "tenantId": "local-dev", "uid": "REPLACE_WITH_USER_SUB" }] },
+    { "id": "company-hybrid", "backend": "postgres", "corpusId": "company-handbook", "ragMode": "hybrid", "filterFields": ["department", "points", "active"], "graphDepth": 2, "readers": [{ "tenantId": "local-dev", "uid": "REPLACE_WITH_USER_SUB" }] }
+  ]
+}

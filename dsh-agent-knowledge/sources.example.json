@@ -1,0 +1,10 @@
+{
+  "sources": [
+    {
+      "id": "personal-handbook",
+      "endpoint": "http://127.0.0.1:9621",
+      "apiKeyEnv": "LIGHTRAG_PERSONAL_API_KEY",
+      "readers": [{ "tenantId": "local-dev", "uid": "REPLACE_WITH_REAL_USER_SUB" }]
+    }
+  ]
+}

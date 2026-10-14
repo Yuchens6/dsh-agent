@@ -11,6 +11,8 @@ COPY dsh-agent-run-control/ dsh-agent-run-control/
 COPY dsh-agent-runtime-dsh/ dsh-agent-runtime-dsh/
 COPY dsh-agent-quota/ dsh-agent-quota/
 COPY dsh-agent-audit/ dsh-agent-audit/
+COPY dsh-agent-knowledge/ dsh-agent-knowledge/
+COPY dsh-agent-web/ dsh-agent-web/
 RUN npm ci --ignore-scripts && npm run build && npm prune --omit=dev --ignore-scripts
 
 FROM node:24.14.0-bookworm-slim AS runtime

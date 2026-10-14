@@ -1,0 +1,2 @@
+# Existing upstream Graph RAG service, pinned to the reviewed API version.
+lightrag-hku[api]==1.5.7
