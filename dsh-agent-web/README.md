@@ -24,3 +24,5 @@ npm run dev:web
 网页进程不需要模型密钥、数据库连接串或内部签名密钥。只转发浏览器访问令牌及事件能力令牌；浏览器令牌仅在内存保存，刷新页面需重新登录。
 
 隔离 UI（用户界面）夹具：构建后执行 `node tests/studio-preview.mjs`，访问 `http://localhost:3080`。其账号、发布、会话和回答均为内存模拟，不连接真实平台，停止即丢弃，不可用作部署方式。
+
+真实工作台验收：先按[工作台说明](../docs/agent-studio.zh-CN.md)启用本地服务并准备 `studio-local-check`（本机验收定义），再执行 `node dsh-agent-deploy/native/studio-test.mjs --live-model`。验证真实登录、发布权限、不可变版本、会话隔离、原生技能与工作流、同源事件恢复；会产生少量模型费用并保留合成会话。省略 `--live-model`（真实模型开关）只做权限和版本检查。结果位于受保护的 `.local/native/studio-verification-*.json`，不包含口令或令牌。
